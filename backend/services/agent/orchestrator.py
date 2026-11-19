@@ -2,7 +2,7 @@
 Kali AI - Agent Orchestrator
 The core autonomous decision loop that:
   1. Sends user objective + tool definitions to Gemini.
-  2. Receives either a plan, tool selection, or final analysis.
+  2. Receives either a plan, tool selection, direct response, or final analysis.
   3. Validates the function call (target, allowed profiles, limits).
   4. Executes the approved tool.
   5. Normalizes and correlates findings in real time.
@@ -13,9 +13,11 @@ The core autonomous decision loop that:
 
 from __future__ import annotations
 
+import re
 import logging
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
+from urllib.parse import urlparse
 
 from backend.core.config import get_settings
 from backend.models.schemas import (
@@ -36,7 +38,8 @@ SYSTEM_PROMPT = """You are Kali AI, an autonomous cybersecurity assessment assis
 
 Your role:
 - Understand security assessment objectives from the user.
-- Formulate a clear, structured assessment plan.
+- If the user asks a conversational or informational question (e.g. what are your capabilities, list tools), reply directly with clear text. Do not request tools unless a security scan or assessment is specifically requested.
+- For assessment requests, formulate a clear, structured assessment plan.
 - Select the appropriate security tool for each step via function calling.
 - Provide a brief 1-sentence rationale explaining why you selected the tool.
 - Analyze tool results and adapt your next action based on actual evidence.
@@ -48,6 +51,41 @@ Rules and Constraints:
 - Only test targets explicitly authorized in the prompt.
 - Do not make assumptions: only report vulnerabilities supported by tool evidence.
 - Adapt your plan dynamically if previous tools reveal relevant services or technologies."""
+
+
+def extract_effective_target(objective: str, target_param: str | None) -> str:
+    """
+    Extract the effective target to scan.
+    Prioritizes explicit target from input box unless it is the default 'localhost'
+    and the user explicitly mentioned a domain or IP in their message.
+    """
+    # If the user typed an explicit target other than the default 'localhost'
+    if target_param and target_param.strip() and target_param.strip().lower() != "localhost":
+        return target_param.strip()
+
+    # Look for URL in the objective text (e.g. http://mytest.lab, https://annacaterers.in)
+    url_match = re.search(r"https?://([^\s/$.?#].[^\s]*)", objective)
+    if url_match:
+        try:
+            parsed = urlparse(url_match.group(0))
+            if parsed.hostname:
+                return parsed.hostname
+        except Exception:
+            pass
+
+    # Look for IP address (e.g. 192.168.1.50, 10.0.0.1)
+    ip_match = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", objective)
+    if ip_match:
+        return ip_match.group(0)
+
+    # Look for domain name in objective (e.g. annacaterers.in, testlab.local)
+    for token in objective.split():
+        clean = token.strip(",;:\"'()[]{}<>!?")
+        if re.match(r"^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?::\d+)?$", clean):
+            if not clean.lower().endswith((".py", ".json", ".txt", ".sh", ".md", ".env")):
+                return clean
+
+    return target_param.strip() if target_param and target_param.strip() else "localhost"
 
 
 class AgentOrchestrator:
@@ -72,9 +110,8 @@ class AgentOrchestrator:
     ) -> AsyncGenerator[AgentEvent, None]:
         """Run the autonomous agent loop and stream AgentEvents."""
         self._validator.reset_counters()
-        effective_target = target.strip() if target and target.strip() else "localhost"
+        effective_target = extract_effective_target(objective, target)
 
-        # Initialize assessment entity
         assessment = Assessment(
             objective=objective,
             status=AssessmentStatus.PENDING,
@@ -98,7 +135,8 @@ class AgentOrchestrator:
                 "content": (
                     f"Objective: {objective}\n"
                     f"Authorized target: {effective_target}\n\n"
-                    "Please create an assessment plan and begin by selecting the first approved tool."
+                    "If the objective is a general question, answer it directly. "
+                    "If it is a security scan request, provide an assessment plan and select the appropriate tool."
                 ),
             },
         ]
@@ -113,10 +151,9 @@ class AgentOrchestrator:
 
                 yield AgentEvent(
                     event_type="thinking",
-                    data={"step": step_number, "message": "Kali AI is reasoning..."},
+                    data={"step": step_number, "message": "Kali AI is analyzing request..."},
                 )
 
-                # Send context to AI
                 ai_response: AIResponse = await self._ai_client.chat(
                     messages=conversation,
                     tools=self._registry.get_all_definitions(),
@@ -144,7 +181,7 @@ class AgentOrchestrator:
 
                     if not validation.is_valid:
                         error_msg = f"Tool execution denied: {'; '.join(validation.errors)}"
-                        logger.warning("Validation failed for %s: %s", tool_id, validation.errors)
+                        logger.warning("Validation failed for %s on %s: %s", tool_id, tool_request.target, validation.errors)
 
                         step = AgentStep(
                             step_number=step_number,
@@ -161,17 +198,53 @@ class AgentOrchestrator:
                                 "tool_id": tool_id,
                                 "errors": validation.errors,
                                 "step": step_number,
+                                "target": effective_target,
                             },
                         )
+
+                        # If target is unauthorized or limits reached, stop assessment immediately
+                        is_unauthorized_target = any("not in the allowed targets list" in e for e in validation.errors)
+                        is_limit_reached = any("Maximum" in e for e in validation.errors)
+
+                        if is_unauthorized_target or is_limit_reached:
+                            assessment.status = AssessmentStatus.FAILED
+                            report_md = (
+                                f"# KALI AI - SECURITY POLICY BLOCK\n\n"
+                                f"**Target:** `{effective_target}`  \n"
+                                f"**Status:** Blocked by Security Validator  \n\n"
+                                f"**Details:**\n"
+                                f"- {'; '.join(validation.errors)}\n\n"
+                                f"### How to Authorize This Target:\n"
+                                f"Kali AI strictly enforces scope boundaries to prevent unauthorized scanning. "
+                                f"If you own or have written authorization to test `{effective_target}`:\n"
+                                f"1. Open your `.env` file in the project root.\n"
+                                f"2. Add `{effective_target}` to the `ALLOWED_TARGETS` list:\n"
+                                f"   ```ini\n"
+                                f"   ALLOWED_TARGETS={self._settings.ALLOWED_TARGETS},{effective_target}\n"
+                                f"   ```\n"
+                                f"3. Re-run your assessment."
+                            )
+                            assessment.report = report_md
+                            assessment.updated_at = datetime.now(timezone.utc)
+                            await update_assessment(assessment)
+
+                            yield AgentEvent(
+                                event_type="complete",
+                                data={
+                                    "report": report_md,
+                                    "summary": error_msg,
+                                    "step": step_number,
+                                    "total_tool_calls": self._validator.tool_calls_count,
+                                    "total_findings": 0,
+                                },
+                            )
+                            break
 
                         conversation.append({
                             "role": "function_result",
                             "name": tool_id,
                             "content": {"error": error_msg, "status": "rejected"},
                         })
-
-                        if any("Maximum" in e for e in validation.errors):
-                            break
                         continue
 
                     # Approved -> Execute
@@ -191,7 +264,7 @@ class AgentOrchestrator:
                     timeout = tool_defn.timeout if tool_defn else 120
                     result = await self._registry.execute(tool_request, timeout=timeout)
 
-                    # Normalize findings from raw output
+                    # Extract findings
                     new_findings = FindingNormalizer.normalize(
                         tool_id=tool_id,
                         output=result.output,
@@ -235,21 +308,20 @@ class AgentOrchestrator:
                         },
                     )
 
-                    # Return result to AI
                     conversation.append({
                         "role": "function_result",
                         "name": tool_id,
                         "content": result.output if result.success else {"error": result.error},
                     })
 
-                # ── CASE 2: Text Response (Plan, Observation, or Completion) ──
+                # ── CASE 2: Text Response (Plan, Conversational Reply, or Completion) ──
                 else:
                     text = ai_response.text
 
                     # Plan phase
-                    if "Assessment Plan" in text or step_number == 1:
+                    if "Assessment Plan" in text:
                         assessment.status = AssessmentStatus.PLANNING
-                        plan_lines = [l.strip() for l in text.splitlines() if l.strip().startswith(("-", "*", "1", "2", "3", "4"))]
+                        plan_lines = [l.strip() for l in text.splitlines() if l.strip().startswith(("-", "*", "1", "2", "3", "4", "5"))]
                         assessment.plan = AssessmentPlan(
                             objective=objective,
                             steps=plan_lines or [text],
@@ -272,15 +344,15 @@ class AgentOrchestrator:
                         conversation.append({"role": "model", "content": text})
                         continue
 
-                    # Final completion
-                    report_md = ReportGenerator.generate_markdown(assessment)
+                    # Direct Answer or Final Completion
+                    report_md = ReportGenerator.generate_markdown(assessment) if assessment.findings else text
                     assessment.report = report_md
                     assessment.status = AssessmentStatus.COMPLETED
 
                     step = AgentStep(
                         step_number=step_number,
                         action="complete",
-                        description="Assessment completed and report generated",
+                        description="Response provided",
                         ai_reasoning=text,
                     )
                     assessment.steps.append(step)
@@ -299,9 +371,9 @@ class AgentOrchestrator:
 
             # Finalize and persist
             assessment.updated_at = datetime.now(timezone.utc)
-            if assessment.status != AssessmentStatus.COMPLETED:
+            if assessment.status not in [AssessmentStatus.COMPLETED, AssessmentStatus.FAILED]:
                 assessment.status = AssessmentStatus.COMPLETED
-                assessment.report = ReportGenerator.generate_markdown(assessment)
+                assessment.report = ReportGenerator.generate_markdown(assessment) if assessment.findings else "Assessment finalized."
 
             await update_assessment(assessment)
 

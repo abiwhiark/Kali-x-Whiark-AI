@@ -176,6 +176,13 @@ class AgentOrchestrator:
                         target=tool_args.get("target", effective_target),
                     )
 
+                    # Record the model's function call in conversation history so Gemini knows it requested this tool
+                    conversation.append({
+                        "role": "model_function_call",
+                        "name": tool_id,
+                        "args": tool_args,
+                    })
+
                     # Security Validation
                     validation = self._validator.validate(tool_request)
 
@@ -388,12 +395,22 @@ class AgentOrchestrator:
             )
 
         except Exception as e:
-            logger.exception("Error in agent loop: %s", e)
+            err_str = str(e)
+            logger.exception("Error in agent loop: %s", err_str)
             assessment.status = AssessmentStatus.FAILED
             assessment.updated_at = datetime.now(timezone.utc)
+            
+            friendly_error = err_str
+            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                friendly_error = (
+                    "Gemini API rate limit exceeded on Free Tier (5 requests/minute). "
+                    "Please wait ~30-60 seconds before trying your next request, or leave GEMINI_API_KEY blank in .env to use Demo Mode without any limits."
+                )
+            
+            assessment.report = f"# ASSESSMENT FAILED\n\n**Error:** {friendly_error}"
             await update_assessment(assessment)
 
             yield AgentEvent(
                 event_type="error",
-                data={"error": str(e), "step": step_number},
+                data={"error": friendly_error, "step": step_number},
             )

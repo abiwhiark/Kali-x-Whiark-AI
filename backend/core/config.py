@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # --- Gemini API ---
     GEMINI_API_KEY: str = Field(default="", description="Gemini API key. Leave empty for demo mode.")
-    GEMINI_MODEL: str = Field(default="gemini-2.0-flash", description="Gemini model to use.")
+    GEMINI_MODEL: str = Field(default="gemini-2.5-flash", description="Gemini model to use.")
 
     # --- Database ---
     DATABASE_PATH: str = Field(default="kali_ai.db", description="SQLite database file path.")

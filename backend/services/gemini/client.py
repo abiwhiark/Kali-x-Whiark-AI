@@ -101,6 +101,14 @@ class GeminiClient:
                         response=msg["content"],
                     )],
                 ))
+            elif role == "model_function_call":
+                contents.append(types.Content(
+                    role="model",
+                    parts=[types.Part.from_function_call(
+                        name=msg["name"],
+                        args=msg["args"],
+                    )],
+                ))
             else:
                 gemini_role = "user" if role == "user" else "model"
                 contents.append(types.Content(
@@ -114,12 +122,20 @@ class GeminiClient:
             temperature=0.2,
         )
 
-        response = await asyncio.to_thread(
-            self._client.models.generate_content,
-            model=self._model_name,
-            contents=contents,
-            config=config,
-        )
+        try:
+            response = await asyncio.to_thread(
+                self._client.models.generate_content,
+                model=self._model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            err_str = str(e)
+            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                logger.warning("Gemini API quota exhausted (429). Falling back to DemoClient.")
+                demo = DemoClient()
+                return await demo.chat(messages, tools, system_prompt)
+            raise
 
         if not response.candidates:
             return AIResponse(text="No response generated.", finish_reason="error")

@@ -143,6 +143,16 @@ class AgentOrchestrator:
 
         step_number = 0
         max_iterations = self._settings.MAX_AGENT_ITERATIONS
+        executed_tools: set[str] = set()
+
+        # Detect if the user asked for a single specific tool
+        obj_lower = objective.lower()
+        is_single_tool_request = not any(kw in obj_lower for kw in ["basic assessment", "security assessment", "full scan", "audit", "comprehensive"])
+        if is_single_tool_request:
+            is_single_tool_request = any(kw in obj_lower for kw in [
+                "nmap", "port scan", "open port", "whatweb", "tech stack", "cms",
+                "nuclei", "cve", "sslyze", "ssl", "tls", "https", "nikto", "zap", "gobuster"
+            ])
 
         try:
             while step_number < max_iterations:
@@ -169,6 +179,25 @@ class AgentOrchestrator:
 
                     if "target" not in tool_args:
                         tool_args["target"] = effective_target
+
+                    # DEDUPLICATION CHECK: Never run the exact same tool twice in one assessment
+                    if tool_id in executed_tools:
+                        logger.info("Tool %s was already executed on this target. Completing assessment.", tool_id)
+                        report_md = ReportGenerator.generate_markdown(assessment) if assessment.findings else f"Tool `{tool_id}` finished execution against `{effective_target}`."
+                        assessment.report = report_md
+                        assessment.status = AssessmentStatus.COMPLETED
+
+                        yield AgentEvent(
+                            event_type="complete",
+                            data={
+                                "report": report_md,
+                                "summary": f"Completed `{tool_id}` execution in 1 attempt.",
+                                "step": step_number,
+                                "total_tool_calls": len(executed_tools),
+                                "total_findings": len(assessment.findings),
+                            },
+                        )
+                        break
 
                     tool_request = ToolCallRequest(
                         tool_id=tool_id,
@@ -320,6 +349,26 @@ class AgentOrchestrator:
                         "name": tool_id,
                         "content": result.output if result.success else {"error": result.error},
                     })
+
+                    executed_tools.add(tool_id)
+
+                    # If this was a single-tool request (e.g. "local nmap scan"), finish immediately in a single attempt!
+                    if is_single_tool_request:
+                        report_md = ReportGenerator.generate_markdown(assessment) if assessment.findings else f"Assessment completed for `{tool_id}`."
+                        assessment.report = report_md
+                        assessment.status = AssessmentStatus.COMPLETED
+
+                        yield AgentEvent(
+                            event_type="complete",
+                            data={
+                                "report": report_md,
+                                "summary": f"Completed `{tool_id}` scan against `{effective_target}`.",
+                                "step": step_number,
+                                "total_tool_calls": len(executed_tools),
+                                "total_findings": len(assessment.findings),
+                            },
+                        )
+                        break
 
                 # ── CASE 2: Text Response (Plan, Conversational Reply, or Completion) ──
                 else:

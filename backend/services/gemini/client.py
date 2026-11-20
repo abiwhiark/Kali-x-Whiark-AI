@@ -131,8 +131,8 @@ class GeminiClient:
             )
         except Exception as e:
             err_str = str(e)
-            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
-                logger.warning("Gemini API quota exhausted (429). Falling back to DemoClient.")
+            if any(err in err_str for err in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE"]):
+                logger.warning("Gemini API error (%s). Falling back to DemoClient.", err_str[:80])
                 demo = DemoClient()
                 return await demo.chat(messages, tools, system_prompt)
             raise

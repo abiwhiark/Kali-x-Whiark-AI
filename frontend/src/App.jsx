@@ -194,8 +194,8 @@ function App() {
         <div className="header-left">
           <div className="header-logo">K</div>
           <div>
-            <h1>Kali AI</h1>
-            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Autonomous Cybersecurity Operator</div>
+            <h1>Kali x Whiark AI</h1>
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Autonomous Cybersecurity Operator (Chatbot: Kali AI)</div>
           </div>
         </div>
         <div className="header-right">

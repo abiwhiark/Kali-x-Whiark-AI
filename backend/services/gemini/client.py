@@ -76,6 +76,11 @@ class GeminiClient:
         from google.genai import types
         import asyncio
 
+        if getattr(self, "_fallback_active", False):
+            if not hasattr(self, "_demo_client"):
+                self._demo_client = DemoClient()
+            return await self._demo_client.chat(messages, tools, system_prompt)
+
         func_decls = _build_function_declarations(tools)
 
         gemini_tools = [types.Tool(function_declarations=[
@@ -123,18 +128,22 @@ class GeminiClient:
         )
 
         try:
-            response = await asyncio.to_thread(
-                self._client.models.generate_content,
-                model=self._model_name,
-                contents=contents,
-                config=config,
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._client.models.generate_content,
+                    model=self._model_name,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=25.0,
             )
         except Exception as e:
             err_str = str(e)
-            if any(err in err_str for err in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE"]):
-                logger.warning("Gemini API error (%s). Falling back to DemoClient.", err_str[:80])
-                demo = DemoClient()
-                return await demo.chat(messages, tools, system_prompt)
+            if isinstance(e, asyncio.TimeoutError) or any(err in err_str for err in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE", "quota"]):
+                logger.warning("Gemini API error/timeout (%s). Falling back to DemoClient.", err_str[:80])
+                self._fallback_active = True
+                self._demo_client = DemoClient()
+                return await self._demo_client.chat(messages, tools, system_prompt)
             raise
 
         if not response.candidates:

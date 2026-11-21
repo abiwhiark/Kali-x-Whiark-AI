@@ -15,6 +15,8 @@ venv/
 .env
 .env.local
 .env.production
+data/
+*.json.secret
 
 # Database
 *.db

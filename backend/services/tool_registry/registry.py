@@ -2,14 +2,17 @@
 Kali AI - Tool Registry
 Central registry of all security tools the agent can use.
 Each tool has a definition (metadata) and an executor function.
-In Stage 1, all executors are MOCK implementations.
+Stage 2: Real subprocess executors for Nmap, WhatWeb, Nuclei with mock fallback.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import random
+import shutil
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 
@@ -85,7 +88,7 @@ class ToolRegistry:
 
 
 # ──────────────────────────────────────────────
-# MOCK TOOL EXECUTORS  (Stage 1)
+# MOCK TOOL EXECUTORS  (Stage 1 / fallback)
 # These return realistic-looking fake data.
 # They are clearly labeled as mock/demo results.
 # ──────────────────────────────────────────────
@@ -283,11 +286,198 @@ async def _mock_gobuster(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def create_default_registry() -> ToolRegistry:
-    """Create a ToolRegistry pre-loaded with all 7 security tools (mock executors)."""
+# ──────────────────────────────────────────────
+# REAL TOOL EXECUTORS  (Stage 2)
+# These run actual binaries via subprocess.
+# Used only when the binary is detected on PATH.
+# ──────────────────────────────────────────────
+
+async def _real_nmap(args: dict[str, Any]) -> dict[str, Any]:
+    """Real Nmap scan via subprocess."""
+    target = args.get("target", "localhost")
+    profile = args.get("profile", "quick")
+
+    profiles = {
+        "quick": ["-F", "--open"],                              # top 100 ports
+        "standard": ["--top-ports", "1000", "--open"],
+        "service_detection": ["-sV", "-sC", "--top-ports", "1000", "--open"],
+    }
+    nmap_flags = profiles.get(profile, profiles["quick"])
+
+    cmd = ["nmap", "-oX", "-"] + nmap_flags + [target]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=115)
+    xml_output = stdout.decode(errors="replace")
+
+    ports = []
+    os_guess = "Unknown"
+    try:
+        root = ET.fromstring(xml_output)
+        for host in root.findall("host"):
+            for port_el in host.findall(".//port"):
+                state_el = port_el.find("state")
+                svc_el = port_el.find("service")
+                if state_el is not None and state_el.get("state") in ("open", "filtered"):
+                    ports.append({
+                        "port": int(port_el.get("portid", 0)),
+                        "state": state_el.get("state", ""),
+                        "service": svc_el.get("name", "") if svc_el is not None else "",
+                        "version": f"{svc_el.get('product', '')} {svc_el.get('version', '')}".strip() if svc_el is not None else "",
+                    })
+            os_el = host.find(".//osmatch")
+            if os_el is not None:
+                os_guess = os_el.get("name", "Unknown")
+    except ET.ParseError:
+        pass
+
+    return {
+        "tool": "nmap",
+        "mock": False,
+        "target": target,
+        "profile": profile,
+        "ports": ports,
+        "os_guess": os_guess,
+        "raw_xml": xml_output[:4000],
+        "stderr": stderr.decode(errors="replace")[:500],
+    }
+
+
+async def _real_whatweb(args: dict[str, Any]) -> dict[str, Any]:
+    """Real WhatWeb scan via subprocess."""
+    target = args.get("target", "localhost")
+    url = target if target.startswith("http") else f"http://{target}"
+
+    cmd = ["whatweb", "--log-json=-", "--quiet", url]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=55)
+    raw = stdout.decode(errors="replace").strip()
+
+    technologies = []
+    headers = {}
+    try:
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            entries = json.loads(line)
+            if isinstance(entries, list):
+                for entry in entries:
+                    for plugin_name, plugin_data in entry.get("plugins", {}).items():
+                        version = ""
+                        if isinstance(plugin_data, dict):
+                            versions = plugin_data.get("version", [])
+                            version = versions[0] if versions else ""
+                        technologies.append({
+                            "name": plugin_name,
+                            "version": version,
+                            "category": "Detected",
+                        })
+                    for hdr_entry in entry.get("plugins", {}).get("HTTPServer", {}).get("string", []):
+                        headers["Server"] = hdr_entry
+    except (json.JSONDecodeError, KeyError):
+        pass
+
+    return {
+        "tool": "whatweb",
+        "mock": False,
+        "target": target,
+        "technologies": technologies,
+        "headers": headers,
+        "raw": raw[:2000],
+    }
+
+
+async def _real_nuclei(args: dict[str, Any]) -> dict[str, Any]:
+    """Real Nuclei vulnerability scan via subprocess."""
+    target = args.get("target", "localhost")
+    templates = args.get("templates", "default")
+    url = target if target.startswith("http") else f"http://{target}"
+
+    template_map = {
+        "default": [],
+        "cves": ["-t", "cves/"],
+        "misconfigurations": ["-t", "misconfigurations/"],
+        "exposures": ["-t", "exposures/"],
+    }
+    t_flags = template_map.get(templates, [])
+
+    cmd = ["nuclei", "-u", url, "-json-export", "-", "-silent", "-nc"] + t_flags
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=175)
+    raw = stdout.decode(errors="replace")
+
+    vulnerabilities = []
+    total_requests = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            finding = json.loads(line)
+            vulnerabilities.append({
+                "template_id": finding.get("template-id", ""),
+                "name": finding.get("info", {}).get("name", ""),
+                "severity": finding.get("info", {}).get("severity", "informational"),
+                "matched_at": finding.get("matched-at", url),
+                "description": finding.get("info", {}).get("description", ""),
+            })
+            total_requests += 1
+        except json.JSONDecodeError:
+            pass
+
+    return {
+        "tool": "nuclei",
+        "mock": False,
+        "target": target,
+        "templates_used": templates,
+        "vulnerabilities": vulnerabilities,
+        "total_requests": total_requests,
+        "raw": raw[:3000],
+    }
+
+
+# ──────────────────────────────────────────────
+# AUTO-DETECTION HELPER
+# ──────────────────────────────────────────────
+
+def _pick_executor(
+    real_fn: ToolExecutor,
+    mock_fn: ToolExecutor,
+    binary_name: str,
+) -> tuple[ToolExecutor, ToolStatus]:
+    """Return (executor, status) — real if binary found on PATH, mock otherwise."""
+    if shutil.which(binary_name):
+        return real_fn, ToolStatus.AVAILABLE
+    return mock_fn, ToolStatus.MOCK
+
+
+# ──────────────────────────────────────────────
+# REGISTRY FACTORY
+# ──────────────────────────────────────────────
+
+def create_registry() -> ToolRegistry:
+    """
+    Create a ToolRegistry pre-loaded with all 7 security tools.
+    Nmap, WhatWeb, and Nuclei auto-detect their real binary and fall back
+    to mock executors when not installed. Nikto, SSLyze, ZAP, and Gobuster
+    remain mock-only for now.
+    """
     registry = ToolRegistry()
 
     # 1 — Nmap
+    nmap_executor, nmap_status = _pick_executor(_real_nmap, _mock_nmap, "nmap")
     registry.register(
         ToolDefinition(
             id="nmap_scan",
@@ -306,14 +496,15 @@ def create_default_registry() -> ToolRegistry:
                 },
                 "required": ["target"],
             },
-            status=ToolStatus.MOCK,
+            status=nmap_status,
             risk_level=RiskLevel.MEDIUM,
             timeout=120,
         ),
-        _mock_nmap,
+        nmap_executor,
     )
 
     # 2 — WhatWeb
+    whatweb_executor, whatweb_status = _pick_executor(_real_whatweb, _mock_whatweb, "whatweb")
     registry.register(
         ToolDefinition(
             id="whatweb_scan",
@@ -327,14 +518,15 @@ def create_default_registry() -> ToolRegistry:
                 },
                 "required": ["target"],
             },
-            status=ToolStatus.MOCK,
+            status=whatweb_status,
             risk_level=RiskLevel.LOW,
             timeout=60,
         ),
-        _mock_whatweb,
+        whatweb_executor,
     )
 
     # 3 — Nuclei
+    nuclei_executor, nuclei_status = _pick_executor(_real_nuclei, _mock_nuclei, "nuclei")
     registry.register(
         ToolDefinition(
             id="nuclei_scan",
@@ -353,14 +545,14 @@ def create_default_registry() -> ToolRegistry:
                 },
                 "required": ["target"],
             },
-            status=ToolStatus.MOCK,
+            status=nuclei_status,
             risk_level=RiskLevel.MEDIUM,
             timeout=180,
         ),
-        _mock_nuclei,
+        nuclei_executor,
     )
 
-    # 4 — Nikto
+    # 4 — Nikto (mock only)
     registry.register(
         ToolDefinition(
             id="nikto_scan",
@@ -381,7 +573,7 @@ def create_default_registry() -> ToolRegistry:
         _mock_nikto,
     )
 
-    # 5 — SSLyze
+    # 5 — SSLyze (mock only)
     registry.register(
         ToolDefinition(
             id="sslyze_scan",
@@ -402,7 +594,7 @@ def create_default_registry() -> ToolRegistry:
         _mock_sslyze,
     )
 
-    # 6 — OWASP ZAP
+    # 6 — OWASP ZAP (mock only)
     registry.register(
         ToolDefinition(
             id="zap_scan",
@@ -429,7 +621,7 @@ def create_default_registry() -> ToolRegistry:
         _mock_zap,
     )
 
-    # 7 — Gobuster
+    # 7 — Gobuster (mock only)
     registry.register(
         ToolDefinition(
             id="gobuster_scan",
@@ -456,3 +648,9 @@ def create_default_registry() -> ToolRegistry:
     )
 
     return registry
+
+
+# Backward-compatible alias
+def create_default_registry() -> ToolRegistry:
+    """Alias for create_registry() — kept for backward compatibility."""
+    return create_registry()

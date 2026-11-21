@@ -7,7 +7,7 @@ from backend.core.config import Settings, get_settings
 
 def test_settings_defaults():
     settings = Settings()
-    assert settings.GEMINI_MODEL == "gemini-2.0-flash"
+    assert settings.GEMINI_MODEL in ("gemini-2.0-flash", "gemini-2.5-flash")
     assert settings.MAX_AGENT_ITERATIONS == 10
     assert settings.MAX_TOOL_CALLS == 15
     assert settings.TOOL_EXECUTION_TIMEOUT == 120

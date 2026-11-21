@@ -10,12 +10,19 @@ from backend.database import db
 
 
 @pytest.fixture(autouse=True)
-async def setup_test_db(tmp_path):
+async def setup_test_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    from backend.core.config import get_settings
+    get_settings.cache_clear()
+    import backend.api.routes as routes
+    routes._orchestrator = None
     test_db_file = str(tmp_path / "test_api_kali_ai.db")
     db.set_db_path(test_db_file)
     await db.init_db()
     yield
     db.set_db_path(None)
+    get_settings.cache_clear()
+    routes._orchestrator = None
     if os.path.exists(test_db_file):
         try:
             os.remove(test_db_file)
@@ -71,3 +78,16 @@ async def test_chat_sse_stream():
         body = response.text
         assert "assessment_start" in body
         assert "data: " in body
+
+
+@pytest.mark.asyncio
+async def test_chat_simple_endpoint():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/api/chat_simple",
+            json={"message": "What is SQL injection?", "history": []},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "reply" in data
+        assert len(data["reply"]) > 10

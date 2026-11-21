@@ -26,20 +26,20 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
     settings = get_settings()
     logger.info("=" * 60)
-    logger.info("  Kali AI — Starting up")
+    logger.info("  Kali x Whiark AI (Chatbot: Kali AI) — Starting up")
     logger.info("  Demo mode: %s", settings.demo_mode)
     logger.info("  Gemini model: %s", settings.GEMINI_MODEL)
     logger.info("=" * 60)
     await init_db()
     logger.info("Database initialized.")
     yield
-    logger.info("Kali AI — Shutting down")
+    logger.info("Kali x Whiark AI — Shutting down")
 
 
 app = FastAPI(
-    title="Kali AI",
-    description="AI-Powered Cybersecurity Assessment Agent",
-    version="0.1.0",
+    title="Kali x Whiark AI",
+    description="Autonomous Cybersecurity Operator (Chatbot: Kali AI)",
+    version="0.2.0",
     lifespan=lifespan,
 )
 

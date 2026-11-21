@@ -13,6 +13,7 @@ The core autonomous decision loop that:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import logging
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ from backend.models.schemas import (
     AgentStep, AgentEvent, ToolCallRequest, Finding,
 )
 from backend.services.gemini.client import create_ai_client, AIResponse
-from backend.services.tool_registry.registry import ToolRegistry, create_default_registry
+from backend.services.tool_registry.registry import ToolRegistry, create_registry
 from backend.services.security.validator import SecurityValidator
 from backend.services.analysis.normalizer import FindingNormalizer
 from backend.services.analysis.correlator import FindingCorrelator
@@ -34,23 +35,28 @@ from backend.database.db import save_assessment, update_assessment
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Kali AI, an autonomous cybersecurity assessment assistant.
+SYSTEM_PROMPT = """You are Kali AI — an expert cybersecurity assistant and autonomous security operator.
 
-Your role:
-- Understand security assessment objectives from the user.
-- If the user asks a conversational or informational question (e.g. what are your capabilities, list tools), reply directly with clear text. Do not request tools unless a security scan or assessment is specifically requested.
-- For assessment requests, formulate a clear, structured assessment plan.
-- Select the appropriate security tool for each step via function calling.
-- Provide a brief 1-sentence rationale explaining why you selected the tool.
-- Analyze tool results and adapt your next action based on actual evidence.
-- When sufficient data is collected, complete the assessment with an executive summary.
+You serve TWO modes based on the user's intent:
 
-Rules and Constraints:
-- You may ONLY request registered tools available via function calling.
-- Never attempt to run arbitrary shell commands.
-- Only test targets explicitly authorized in the prompt.
-- Do not make assumptions: only report vulnerabilities supported by tool evidence.
-- Adapt your plan dynamically if previous tools reveal relevant services or technologies."""
+1. **CONVERSATIONAL MODE** (default for general questions):
+   - Answer cybersecurity questions, explain concepts, help with CTFs, discuss tools and vulnerabilities.
+   - Also handle general knowledge questions, programming help, math, science, or any casual conversation.
+   - Reply directly with a clear, helpful, well-formatted response.
+   - Do NOT trigger tool calls for conversational or informational questions.
+
+2. **SECURITY ASSESSMENT MODE** (only for explicit scan requests):
+   - Formulate a clear assessment plan.
+   - Select the appropriate security tool via function calling.
+   - Provide a brief 1-sentence rationale for each tool choice.
+   - Analyze results and adapt dynamically based on evidence.
+   - Complete with an executive summary.
+
+Rules:
+- Only request registered tools available via function calling.
+- Never attempt arbitrary shell commands.
+- Only test explicitly authorized targets.
+- Report only evidence-backed vulnerabilities."""
 
 
 def extract_effective_target(objective: str, target_param: str | None) -> str:
@@ -93,7 +99,7 @@ class AgentOrchestrator:
 
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._registry = create_default_registry()
+        self._registry = create_registry()
         self._ai_client = create_ai_client()
         self._validator = SecurityValidator(self._registry)
 
@@ -463,3 +469,77 @@ class AgentOrchestrator:
                 event_type="error",
                 data={"error": friendly_error, "step": step_number},
             )
+
+    async def chat(self, message: str, history: list[dict[str, Any]] | None = None) -> str:
+        """
+        Conversational chat interface like ChatGPT / Gemini / HexStrike AI.
+        Direct natural language dialog with memory, explanation, scripting, and CTF guidance.
+        """
+        if history is None:
+            history = []
+
+        if self.is_demo_mode:
+            from backend.api.routes import _generate_demo_chat_reply
+            return _generate_demo_chat_reply(message)
+
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=self._settings.GEMINI_API_KEY)
+        system_instruction = (
+            "You are Kali AI, an expert autonomous cybersecurity assistant and conversational AI "
+            "(inspired by HexStrike AI and Gemini CLI). "
+            "You assist security researchers, ethical hackers, and students with:\n"
+            "- Explaining security concepts, network protocols, cryptography, and vulnerabilities (OWASP Top 10, CVEs)\n"
+            "- CTF challenges, forensics, reverse engineering, and exploit methodology\n"
+            "- Security tooling usage (Nmap, WhatWeb, Nuclei, Nikto, SSLyze, ZAP, Gobuster, Metasploit, Burp Suite)\n"
+            "- Writing and reviewing Python, Bash, Go, and PowerShell security scripts\n"
+            "- Remediation, hardening, and defensive recommendations\n\n"
+            "Format responses using clean Markdown with code blocks, bullet points, and concise explanations. "
+            "Be direct, helpful, and technically accurate. "
+            "If the user wants to execute an actual security scan on a live target, inform them they can run commands like "
+            "'scan <target>', 'nmap scan', or use 'target <host>'."
+        )
+
+        contents = []
+        for h in history[-20:]:
+            role = h.get("role", "user")
+            content_text = h.get("content", "")
+            if not content_text:
+                continue
+            gemini_role = "user" if role == "user" else "model"
+            contents.append(types.Content(role=gemini_role, parts=[types.Part.from_text(text=content_text)]))
+
+        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=message)]))
+
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=self._settings.GEMINI_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.7,
+                    ),
+                ),
+                timeout=20.0,
+            )
+            return response.text or "No response generated."
+        except asyncio.TimeoutError:
+            from backend.api.routes import _generate_demo_chat_reply
+            return (
+                "⚠️ **Gemini API took longer than expected to respond.**\n\n"
+                + _generate_demo_chat_reply(message)
+            )
+        except Exception as e:
+            err_str = str(e)
+            logger.warning("Error in orchestrator chat: %s", err_str)
+            from backend.api.routes import _generate_demo_chat_reply
+            if any(k in err_str for k in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE", "quota"]):
+                return (
+                    "⚠️ **Gemini API rate limit reached (Free tier).**\n\n"
+                    "Here is an instant educational response in the meantime:\n\n"
+                    + _generate_demo_chat_reply(message)
+                )
+            return f"Error communicating with AI: {err_str}"

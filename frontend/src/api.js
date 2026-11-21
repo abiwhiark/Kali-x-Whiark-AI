@@ -79,3 +79,20 @@ export async function* parseSSE(reader) {
     }
   }
 }
+
+/**
+ * Send a simple conversational message and get a JSON response.
+ */
+export async function sendSimpleChat(message, history = []) {
+  const res = await fetch(`${API_BASE}/chat_simple`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, history }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Chat request failed: ${res.status}`);
+  }
+
+  return res.json();
+}

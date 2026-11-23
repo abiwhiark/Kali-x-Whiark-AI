@@ -455,9 +455,9 @@ def is_scan_request(text: str, has_target: bool = False) -> bool:
         "why does", "why is", "why do", "explain", "describe", "tell me about",
         "can you", "could you", "help me", "write a", "create a", "generate a",
         "who are you", "what can you do", "difference between", "compare",
-        "hi", "hello", "hey", "test",
+        "hi", "hello", "hey",
     )
-    if any(t.startswith(q) for q in question_starters):
+    if any(t.startswith(q) for q in question_starters) or t == "test" or t.startswith("test "):
         return False
 
     scan_verbs = [
@@ -467,16 +467,17 @@ def is_scan_request(text: str, has_target: bool = False) -> bool:
     ]
     has_scan_kw = any(kw in t for kw in scan_verbs)
 
-    # Check for target indicators
+    # Check for target indicators (subdomains, IPs, URLs, or 'on <target>')
     import re
     has_target_in_text = bool(
         re.search(r"https?://", t) or
         re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", t) or
-        re.search(r"\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}\b", t) or
-        "localhost" in t or "127.0.0.1" in t
+        re.search(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b", t) or
+        "localhost" in t or "127.0.0.1" in t or
+        re.search(r"\b(?:on|against|target)\s+[a-zA-Z0-9_.-]+", t)
     )
 
-    if has_scan_kw and (has_target_in_text or has_target):
+    if has_scan_kw and (has_target_in_text or has_target or t.startswith(("nmap", "scan", "whatweb", "nuclei", "port scan"))):
         return True
 
     return False
@@ -577,9 +578,13 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
             new_target = user_input[7:].strip()
             if new_target:
                 persistent_target = new_target
-                rprint(f"  [green]✔[/green]  Target set to: [cyan bold]{persistent_target}[/cyan bold]")
+                orchestrator.authorize_target(persistent_target)
+                if persistent_target in ("*", "all", "any"):
+                    rprint(f"  [green]✔[/green]  [bold yellow]HexStrike Mode Enabled:[/bold yellow] Any target is now authorized for scanning!")
+                else:
+                    rprint(f"  [green]✔[/green]  Target set to: [cyan bold]{persistent_target}[/cyan bold] (Authorized for scanning)")
             else:
-                rprint("[red]  Usage: target <hostname or IP>[/red]")
+                rprint("[red]  Usage: target <hostname, IP, URL, or * for all>[/red]")
 
         elif lower == "target":
             if persistent_target:

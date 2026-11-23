@@ -127,24 +127,31 @@ class GeminiClient:
             temperature=0.2,
         )
 
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self._client.models.generate_content,
-                    model=self._model_name,
-                    contents=contents,
-                    config=config,
-                ),
-                timeout=25.0,
-            )
-        except Exception as e:
-            err_str = str(e)
-            if isinstance(e, asyncio.TimeoutError) or any(err in err_str for err in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE", "quota"]):
-                logger.warning("Gemini API error/timeout (%s). Falling back to DemoClient.", err_str[:80])
-                self._fallback_active = True
-                self._demo_client = DemoClient()
-                return await self._demo_client.chat(messages, tools, system_prompt)
-            raise
+        response = None
+        for attempt in range(2):
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._client.models.generate_content,
+                        model=self._model_name,
+                        contents=contents,
+                        config=config,
+                    ),
+                    timeout=25.0,
+                )
+                break
+            except Exception as e:
+                err_str = str(e)
+                if attempt == 0 and ("503" in err_str or "UNAVAILABLE" in err_str):
+                    logger.info("Transient 503 error from Gemini API, retrying once after 1.0s...")
+                    await asyncio.sleep(1.0)
+                    continue
+                if isinstance(e, asyncio.TimeoutError) or any(err in err_str for err in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE", "quota"]):
+                    logger.warning("Gemini API error/timeout (%s). Falling back to DemoClient for this request.", err_str[:80])
+                    if not hasattr(self, "_demo_client"):
+                        self._demo_client = DemoClient()
+                    return await self._demo_client.chat(messages, tools, system_prompt)
+                raise
 
         if not response.candidates:
             return AIResponse(text="No response generated.", finish_reason="error")

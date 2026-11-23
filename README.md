@@ -87,74 +87,156 @@ The agent controller enforces mandatory restrictions that the LLM cannot overrid
 
 ---
 
-## 4. Quickstart Guide
+## 4. Quickstart & Installation Guide
 
 ### Prerequisites
-- Python 3.10+ (tested on Python 3.12)
-- Node.js 18+ (tested on Node.js 24)
-- Git
+- **Git**
+- **Python 3.10+** (Python 3.12 recommended)
+- **Node.js 18+** & **npm** (for web dashboard)
+- **Nmap** (Optional: Kali AI includes a built-in async TCP socket prober fallback if Nmap CLI is not installed)
 
-### Installation
+---
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repo-url>
-   cd "kali ai"
-   ```
+### Method A: Kali Linux / Debian / Ubuntu (Recommended for Security Testing)
 
-2. **Configure Environment Variables:**
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env`:
-   - Set `GEMINI_API_KEY=your_key_here` to enable live Gemini intelligence.
-   - Leave empty to run in **Demonstration Mode**.
+Open your terminal and run:
 
-3. **Install Backend Dependencies:**
-   ```bash
-   python -m pip install -r backend/requirements.txt
-   ```
+```bash
+# 1. Install system prerequisites
+sudo apt update
+sudo apt install -y git python3 python3-pip python3-venv nmap nodejs npm
 
-4. **Install Frontend Dependencies:**
-   ```bash
-   cd frontend
-   npm install
-   cd ..
-   ```
+# 2. Clone the repository
+git clone https://github.com/abiwhiark/Kali-x-Whiark-AI.git
+cd Kali-x-Whiark-AI
+
+# 3. Create and activate a Python virtual environment (PEP 668 compliant)
+python3 -m venv venv
+source venv/bin/activate
+
+# 4. Install backend dependencies
+pip install --upgrade pip
+pip install -r backend/requirements.txt
+
+# (Note: If not using a venv and you see 'externally-managed-environment', run:
+#  python3 -m pip install -r backend/requirements.txt --break-system-packages)
+
+# 5. Configure environment variables
+cp .env.example .env
+# Edit .env to add your GEMINI_API_KEY (leave blank for Demo Mode)
+nano .env
+
+# 6. Install frontend dependencies (for Web Dashboard)
+cd frontend
+npm install
+cd ..
+```
+
+---
+
+### Method B: Windows (PowerShell)
+
+Open PowerShell and run:
+
+```powershell
+# 1. Clone the repository
+git clone https://github.com/abiwhiark/Kali-x-Whiark-AI.git
+cd Kali-x-Whiark-AI
+
+# 2. (Optional but recommended) Create virtual environment
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+
+# 3. Install backend dependencies
+python -m pip install --upgrade pip
+pip install -r backend/requirements.txt
+
+# 4. Configure environment variables
+Copy-Item .env.example .env
+# Open .env and add your GEMINI_API_KEY
+notepad .env
+
+# 5. Install frontend dependencies (for Web Dashboard)
+cd frontend
+npm install
+cd ..
+```
 
 ---
 
 ## 5. Running the Application
 
-### 🖥️ Terminal CLI (NEW — Recommended for quick use):
+### 🖥️ Option 1: Interactive Terminal CLI (Fastest)
+
+Ensure your virtual environment is active, then run:
+
 ```bash
-# Interactive REPL — full shell with colored output
+# Linux / Kali Linux:
+python3 cli.py
+
+# Windows:
 python cli.py
-
-# One-shot scan without entering the REPL
-python cli.py -o "nmap scan" -t localhost
-python cli.py -o "full security assessment" -t 192.168.1.1
-python cli.py -o "check ssl" -t mysite.com --no-color
-
-# In-REPL commands:
-#   help            → Show all commands
-#   tools           → List all security tools
-#   target <host>   → Set a persistent scan target
-#   quit / exit     → Exit
 ```
 
-### Start the Backend (Terminal 1):
+#### Inside the Interactive Shell:
+* **Run a scan:**
+  ```text
+  KaliAI ❯ nmap scan
+  ```
+  or
+  ```text
+  KaliAI ❯ scan localhost
+  ```
+* **Set a persistent scan target:**
+  ```text
+  KaliAI ❯ target 127.0.0.1
+  ```
+  *(To allow scanning any target in educational labs/CTFs, type: `target *`)*
+* **Ask cybersecurity & CTF questions (Conversational AI):**
+  ```text
+  KaliAI ❯ explain how directory traversal works and how to remediate it
+  ```
+* **View registered security tools:**
+  ```text
+  KaliAI ❯ tools
+  ```
+* **Exit:**
+  ```text
+  KaliAI ❯ quit
+  ```
+
+#### One-Shot CLI Execution (from your system shell):
 ```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
-```
-API Docs available at: [http://localhost:8000/docs](http://localhost:8000/docs)
+# One-shot Nmap scan
+python3 cli.py -o "nmap scan" -t localhost
 
-### Start the Frontend (Terminal 2):
+# Scan a remote authorized target
+python3 cli.py -o "nmap scan" -t testphp.vulnweb.com
+```
+
+---
+
+### 🌐 Option 2: Full Web Dashboard (React + FastAPI)
+
+To launch the full interactive web application, open two terminal windows:
+
+#### Terminal 1 — Start the Backend API:
+```bash
+# Linux / Kali Linux:
+source venv/bin/activate
+python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Windows:
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+```
+> Interactive API Swagger Documentation is available at: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+#### Terminal 2 — Start the Frontend Dashboard:
 ```bash
 cd frontend
 npm run dev
 ```
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+> Open your browser at **[http://localhost:5173](http://localhost:5173)** to view the live dashboard, AI activity stream, and findings matrix.
 
 ---
 

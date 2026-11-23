@@ -46,9 +46,16 @@ class FindingNormalizer:
             21: ("FTP Service Exposed", Severity.MEDIUM, "FTP service allows unencrypted or legacy file transfers."),
             22: ("SSH Service Exposed", Severity.INFORMATIONAL, "Remote administrative SSH service detected."),
             23: ("Telnet Service Exposed", Severity.HIGH, "Telnet sends plaintext credentials across the network."),
+            135: ("Microsoft RPC Endpoint Mapper Exposed", Severity.LOW, "MSRPC endpoint mapper service is accessible. Should be firewalled from untrusted networks."),
+            139: ("NetBIOS Session Service Exposed", Severity.MEDIUM, "NetBIOS session service exposed; risk of legacy network enumeration."),
+            445: ("Microsoft SMB File Sharing Service Exposed", Severity.MEDIUM, "SMB file sharing service is active; ensure SMB signing is enforced and access is restricted."),
+            1433: ("Microsoft SQL Server Database Exposed", Severity.MEDIUM, "MSSQL database port is exposed to the network."),
             3306: ("MySQL Database Service Exposed", Severity.MEDIUM, "Database server port is exposed; should restrict to private subnet."),
+            3389: ("Remote Desktop (RDP) Service Exposed", Severity.MEDIUM, "RDP service detected; ensure NLA is enforced and brute-force protection is active."),
             5432: ("PostgreSQL Database Service Exposed", Severity.MEDIUM, "PostgreSQL service is accessible externally."),
             6379: ("Redis Cache Service Exposed", Severity.HIGH, "Redis instance may lack authentication or bind to public interface."),
+            8000: ("Alternative HTTP Web Service Active", Severity.INFORMATIONAL, "Common development or microservice HTTP endpoint is active."),
+            8080: ("Alternative HTTP Proxy/Web Service Active", Severity.INFORMATIONAL, "Secondary HTTP service port is listening."),
             27017: ("MongoDB Database Service Exposed", Severity.HIGH, "MongoDB database exposed to the network."),
         }
 

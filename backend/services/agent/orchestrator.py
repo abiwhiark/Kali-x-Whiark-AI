@@ -47,9 +47,10 @@ You serve TWO modes based on the user's intent:
 
 2. **SECURITY ASSESSMENT MODE** (only for explicit scan requests):
    - Formulate a clear assessment plan.
-   - Select the appropriate security tool via function calling.
+   - For general host scan requests or reconnaissance (e.g. 'scan localhost'), select `nmap_scan` via function calling to map open ports and active services.
+   - For web target profiling, select `whatweb_scan` or `nmap_scan`.
    - Provide a brief 1-sentence rationale for each tool choice.
-   - Analyze results and adapt dynamically based on evidence.
+   - Once tool results are returned, provide a detailed technical assessment of discovered findings, security implications, and remediation guidance.
    - Complete with an executive summary.
 
 Rules:
@@ -69,7 +70,7 @@ def extract_effective_target(objective: str, target_param: str | None) -> str:
     if target_param and target_param.strip() and target_param.strip().lower() != "localhost":
         return target_param.strip()
 
-    # Look for URL in the objective text (e.g. http://mytest.lab, https://annacaterers.in)
+    # 1. Look for URL in the objective text (e.g. http://testphp.vulnweb.com, https://site.com/path)
     url_match = re.search(r"https?://([^\s/$.?#].[^\s]*)", objective)
     if url_match:
         try:
@@ -79,17 +80,32 @@ def extract_effective_target(objective: str, target_param: str | None) -> str:
         except Exception:
             pass
 
-    # Look for IP address (e.g. 192.168.1.50, 10.0.0.1)
+    # 2. Look for IP address (e.g. 192.168.1.50, 10.0.0.1)
     ip_match = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", objective)
     if ip_match:
         return ip_match.group(0)
 
-    # Look for domain name in objective (e.g. annacaterers.in, testlab.local)
+    # 3. Look for domain or subdomain (e.g. testphp.vulnweb.com, vulnweb.com, lab.local)
+    domain_pattern = r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?::\d+)?$"
     for token in objective.split():
         clean = token.strip(",;:\"'()[]{}<>!?")
-        if re.match(r"^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?::\d+)?$", clean):
+        if re.match(domain_pattern, clean):
             if not clean.lower().endswith((".py", ".json", ".txt", ".sh", ".md", ".env")):
-                return clean
+                return clean.split(":")[0]
+
+    # 4. Look for target following "on <host>", "against <host>", "target <host>"
+    kw_match = re.search(r"\b(?:on|against|target)\s+([a-zA-Z0-9_.-]+)", objective, re.IGNORECASE)
+    if kw_match:
+        cand = kw_match.group(1).strip(",;:\"'()[]{}<>!?")
+        if cand.lower() not in ("this", "all", "the", "a", "an", "it", "ports", "services", "open", "nmap", "nuclei"):
+            return cand
+
+    # 5. Check first token if it has a dot or dash
+    tokens = objective.split()
+    if tokens:
+        first = tokens[0].strip(",;:\"'()[]{}<>!?")
+        if "." in first and not first.lower().endswith((".py", ".json", ".txt", ".sh", ".md", ".env")):
+            return first.split(":")[0]
 
     return target_param.strip() if target_param and target_param.strip() else "localhost"
 
@@ -110,6 +126,10 @@ class AgentOrchestrator:
     @property
     def is_demo_mode(self) -> bool:
         return self._settings.demo_mode
+
+    def authorize_target(self, target: str) -> None:
+        """Authorize a target for scanning in this session."""
+        self._validator.authorize_target(target)
 
     async def run_assessment(
         self, objective: str, target: str | None = None
@@ -358,23 +378,36 @@ class AgentOrchestrator:
 
                     executed_tools.add(tool_id)
 
-                    # If this was a single-tool request (e.g. "local nmap scan"), finish immediately in a single attempt!
+                    # If this was a single-tool request (e.g. "local nmap scan")
                     if is_single_tool_request:
-                        report_md = ReportGenerator.generate_markdown(assessment) if assessment.findings else f"Assessment completed for `{tool_id}`."
-                        assessment.report = report_md
-                        assessment.status = AssessmentStatus.COMPLETED
+                        if not self.is_demo_mode:
+                            # Prompt Gemini to provide in-depth technical analysis of the tool output
+                            conversation.append({
+                                "role": "user",
+                                "content": (
+                                    f"The security tool '{tool_id}' finished execution against target '{effective_target}'. "
+                                    "Please provide a concise technical assessment of the findings, explaining what the discovered "
+                                    "open ports/services or findings indicate, potential security risks, and prioritized remediation actions."
+                                ),
+                            })
+                            continue
+                        else:
+                            # In demo mode, finalize report
+                            report_md = ReportGenerator.generate_markdown(assessment) if assessment.findings else f"Assessment completed for `{tool_id}`."
+                            assessment.report = report_md
+                            assessment.status = AssessmentStatus.COMPLETED
 
-                        yield AgentEvent(
-                            event_type="complete",
-                            data={
-                                "report": report_md,
-                                "summary": f"Completed `{tool_id}` scan against `{effective_target}`.",
-                                "step": step_number,
-                                "total_tool_calls": len(executed_tools),
-                                "total_findings": len(assessment.findings),
-                            },
-                        )
-                        break
+                            yield AgentEvent(
+                                event_type="complete",
+                                data={
+                                    "report": report_md,
+                                    "summary": f"Completed `{tool_id}` scan against `{effective_target}`.",
+                                    "step": step_number,
+                                    "total_tool_calls": len(executed_tools),
+                                    "total_findings": len(assessment.findings),
+                                },
+                            )
+                            break
 
                 # ── CASE 2: Text Response (Plan, Conversational Reply, or Completion) ──
                 else:
@@ -407,7 +440,11 @@ class AgentOrchestrator:
                         continue
 
                     # Direct Answer or Final Completion
-                    report_md = ReportGenerator.generate_markdown(assessment) if assessment.findings else text
+                    generated_report = ReportGenerator.generate_markdown(assessment) if assessment.findings else ""
+                    if text and generated_report:
+                        report_md = f"{generated_report}\n\n## 6. AI Technical Analysis & Assessment\n\n{text}"
+                    else:
+                        report_md = text or generated_report or "Assessment finalized."
                     assessment.report = report_md
                     assessment.status = AssessmentStatus.COMPLETED
 

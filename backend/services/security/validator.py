@@ -40,6 +40,20 @@ class SecurityValidator:
         self._settings = get_settings()
         self._tool_calls_count: int = 0
         self._iteration_count: int = 0
+        self._session_allowed_targets: set[str] = set()
+
+    def authorize_target(self, target: str) -> None:
+        """Dynamically authorize a target for the current session or assessment."""
+        if not target:
+            return
+        cleaned = target.strip().lower()
+        try:
+            parsed = urlparse(target)
+            if parsed.hostname:
+                cleaned = parsed.hostname.lower()
+        except Exception:
+            pass
+        self._session_allowed_targets.add(cleaned)
 
     def reset_counters(self) -> None:
         """Reset per-assessment counters."""
@@ -138,11 +152,20 @@ class SecurityValidator:
         except Exception:
             pass
 
-        # Direct hostname match
-        if hostname in allowed:
+        # 1. HexStrike Wildcard Mode: '*' or 'all' allows scanning any website/IP
+        if "*" in allowed or "all" in allowed or "any" in allowed:
             return True, ""
 
-        # Check if hostname is an IP in an allowed CIDR
+        # 2. Dynamically authorized targets in this session
+        if hasattr(self, "_session_allowed_targets"):
+            if "*" in self._session_allowed_targets or hostname.lower() in self._session_allowed_targets:
+                return True, ""
+
+        # 3. Direct hostname match in ALLOWED_TARGETS
+        if hostname.lower() in [a.lower() for a in allowed]:
+            return True, ""
+
+        # 4. Check if hostname is an IP in an allowed CIDR
         try:
             ip = ipaddress.ip_address(hostname)
             for allowed_entry in allowed:
@@ -158,5 +181,5 @@ class SecurityValidator:
 
         return False, (
             f"Target '{hostname}' is not in the allowed targets list. "
-            f"Allowed: {allowed}. Add it to ALLOWED_TARGETS in .env to permit scanning."
+            f"To scan any website like HexStrike AI, set ALLOWED_TARGETS=* in .env or type 'target *' in Kali AI."
         )

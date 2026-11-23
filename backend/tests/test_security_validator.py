@@ -47,6 +47,28 @@ def test_unauthorized_external_target_blocked(validator):
     assert any("not in the allowed targets list" in err for err in result.errors)
 
 
+def test_dynamically_authorized_target_accepted(validator):
+    validator.authorize_target("targetwebsite.com")
+    req = ToolCallRequest(
+        tool_id="whatweb_scan",
+        arguments={"target": "targetwebsite.com"},
+        target="targetwebsite.com",
+    )
+    result = validator.validate(req)
+    assert result.is_valid is True
+
+
+def test_wildcard_target_accepted(validator):
+    validator.authorize_target("*")
+    req = ToolCallRequest(
+        tool_id="nmap_scan",
+        arguments={"target": "random-target-site.com", "profile": "quick"},
+        target="random-target-site.com",
+    )
+    result = validator.validate(req)
+    assert result.is_valid is True
+
+
 def test_unregistered_tool_blocked(validator):
     req = ToolCallRequest(
         tool_id="unauthorized_exploit_tool",

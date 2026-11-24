@@ -140,7 +140,19 @@ class SecurityValidator:
         return ValidationResult(is_valid=is_valid, errors=errors, warnings=warnings)
 
     def _validate_target(self, target: str) -> tuple[bool, str]:
-        """Check if the target is in the allowed list."""
+        """
+        Validate the target.
+
+        New model (professional consent gate):
+          - ANY target is allowed once the user has acknowledged authorization
+            via ConsentGate (same model as Metasploit / Burp Suite / Nessus).
+          - If the target has NOT been consented to yet in the session, the
+            orchestrator will show the ConsentGate disclaimer to the user.
+          - The old ALLOWED_TARGETS hard-list is still checked as a fast-path
+            to skip the consent prompt for pre-approved hosts.
+        """
+        from backend.services.security.consent_gate import get_consent_gate
+
         allowed = self._settings.allowed_targets_list
 
         # Extract hostname from URL if needed
@@ -155,30 +167,22 @@ class SecurityValidator:
         hostname_lower = hostname.strip().lower()
 
         logger.debug(
-            "Validating target '%s' (hostname='%s') against allowed_targets=%s",
-            target, hostname_lower, allowed,
+            "Validating target '%s' (hostname='%s')",
+            target, hostname_lower,
         )
 
-        # 1. HexStrike Wildcard Mode: '*' or 'all' allows scanning any website/IP
+        # 1. Wildcard mode in ALLOWED_TARGETS → always allow
         if "*" in allowed or "all" in allowed or "any" in allowed:
             logger.info("Target '%s' allowed via wildcard mode.", hostname_lower)
             return True, ""
 
-        # 2. Dynamically authorized targets in this session
-        if hasattr(self, "_session_allowed_targets"):
-            if "*" in self._session_allowed_targets or hostname_lower in self._session_allowed_targets:
-                logger.info("Target '%s' allowed via session authorization.", hostname_lower)
-                return True, ""
-
-        # 3. Direct hostname match in ALLOWED_TARGETS (exact or suffix)
+        # 2. Pre-approved via ALLOWED_TARGETS (fast path — no consent needed)
         allowed_lower = [a.strip().lower() for a in allowed]
         if hostname_lower in allowed_lower:
-            logger.info("Target '%s' allowed via exact match.", hostname_lower)
+            logger.info("Target '%s' allowed via ALLOWED_TARGETS exact match.", hostname_lower)
             return True, ""
 
-        # 3b. Subdomain or domain alias match
         for entry in allowed_lower:
-            # Skip CIDR ranges and IPs for subdomain matching
             if "/" in entry or entry.replace(".", "").isdigit():
                 continue
             if (
@@ -186,44 +190,36 @@ class SecurityValidator:
                 or entry.endswith("." + hostname_lower)
                 or (len(hostname_lower) >= 4 and hostname_lower in entry)
             ):
-                logger.info("Target '%s' allowed via match with allowed entry '%s'.", hostname_lower, entry)
+                logger.info("Target '%s' allowed via ALLOWED_TARGETS domain match '%s'.", hostname_lower, entry)
                 return True, ""
 
-        # 4. Check if hostname is an IP in an allowed CIDR
+        # 3. Check CIDR ranges in ALLOWED_TARGETS
         try:
+            import ipaddress, socket
             ip = ipaddress.ip_address(hostname)
             for allowed_entry in allowed:
                 try:
                     network = ipaddress.ip_network(allowed_entry, strict=False)
                     if ip in network:
-                        logger.info("Target IP %s allowed via CIDR %s.", ip, network)
                         return True, ""
                 except ValueError:
                     continue
         except ValueError:
-            # hostname is not an IP — try resolving it and checking CIDRs
-            try:
-                import socket
-                resolved_ips = socket.getaddrinfo(hostname, None, socket.AF_INET)
-                resolved_ip_strs = list({info[4][0] for info in resolved_ips})
-                for resolved_ip_str in resolved_ip_strs:
-                    resolved_ip = ipaddress.ip_address(resolved_ip_str)
-                    for allowed_entry in allowed:
-                        try:
-                            network = ipaddress.ip_network(allowed_entry, strict=False)
-                            if resolved_ip in network:
-                                logger.info(
-                                    "Target '%s' resolves to %s, allowed via CIDR %s.",
-                                    hostname, resolved_ip, network,
-                                )
-                                return True, ""
-                        except ValueError:
-                            continue
-            except Exception:
-                pass
+            pass
 
+        # 4. ConsentGate — user confirmed authorization for this target this session
+        gate = get_consent_gate()
+        if gate.is_consented(hostname_lower):
+            logger.info("Target '%s' allowed via ConsentGate session consent.", hostname_lower)
+            return True, ""
+
+        # 5. Session-authorized targets (legacy path from authorize_target())
+        if hasattr(self, "_session_allowed_targets"):
+            if "*" in self._session_allowed_targets or hostname_lower in self._session_allowed_targets:
+                logger.info("Target '%s' allowed via session authorization.", hostname_lower)
+                return True, ""
+
+        # 6. Not yet consented — return a consent-required message (not a hard block)
         return False, (
-            f"Target '{hostname}' is not in the allowed targets list. "
-            f"Current ALLOWED_TARGETS: {', '.join(allowed)}. "
-            f"To scan any website like HexStrike AI, set ALLOWED_TARGETS=* in .env or type 'target *' in Kali AI."
+            f"CONSENT_REQUIRED:{hostname}"
         )

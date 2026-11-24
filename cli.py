@@ -198,6 +198,7 @@ EVENT_ICONS = {
     "tool_result":       "✅",
     "finding":           "🔍",
     "validation_failed": "🚫",
+    "consent_required":  "⚠️",
     "complete":          "🏁",
     "assessment_end":    "📊",
     "error":             "❌",
@@ -282,6 +283,22 @@ def render_event(event_type: str, data: dict) -> None:
                 print(f"  [{sev:>13}]  {title}")
                 if asset:
                     print(f"               Asset: {asset}")
+        rprint("")
+
+    elif event_type == "consent_required":
+        consent_target = data.get("target", "?")
+        rprint("")
+        if HAS_RICH:
+            console.rule("[bold yellow]⚠️  AUTHORIZATION REQUIRED[/bold yellow]", style="yellow")
+            console.print(f"  Target: [cyan bold]{consent_target}[/cyan bold]")
+            console.print(
+                "\n  [bold white]You are about to scan an external target.[/bold white]\n"
+                "  By typing [bold green]yes[/bold green] you confirm you OWN this system\n"
+                "  or have WRITTEN authorization to test it.\n"
+            )
+        else:
+            print(f"\n  ⚠️  AUTHORIZATION REQUIRED for: {consent_target}")
+            print("  Confirm you own or have written permission to test this target.")
         rprint("")
 
     elif event_type == "validation_failed":
@@ -388,26 +405,34 @@ def print_help() -> None:
         table.add_column("desc", style="white")
         cmds = [
             ("help / ?",         "Show this help manual"),
-            ("tools",            "List registered security tools and their execution status"),
-            ("target <host>",    "Set a persistent scan target (e.g. target 127.0.0.1)"),
+            ("tools",            "List registered AI security tools and their execution status"),
+            ("kali tools",       "List ALL Kali Linux tools the runner knows (shows if installed)"),
+            ("target <host>",    "Authorize + set a persistent scan target (e.g. target testphp.vulnweb.com)"),
+            ("target *",         "HexStrike Mode — authorize ALL targets (you accept responsibility)"),
+            ("yes / authorized", "Confirm authorization for the current target after consent prompt"),
+            ("read file <path>", "Read a file from the host system (absolute path required)"),
+            ("ls <path>",        "List files in a directory on the host system"),
             ("target",           "View current active target"),
             ("clear / cls",      "Clear terminal screen and conversation history"),
             ("reset",            "Clear configuration and re-run setup"),
             ("quit / exit",      "Exit Kali AI"),
             ("",                 ""),
-            ("— Conversational Chat (Like ChatGPT / Gemini) —", ""),
+            ("— Conversational Chat —", ""),
             ("what is sql injection?", "Ask any cybersecurity question or concept"),
             ("how do I exploit CVE-2021-41773?", "Technical vulnerability & exploitation guidance"),
             ("write a python script to scan ports", "Code generation & scripting"),
             ("explain why port 80 was open", "Follow-up questions remembering previous context"),
             ("",                 ""),
-            ("— Autonomous Security Scans (HexStrike AI Execution) —", ""),
-            ("scan localhost",   "Autonomous security assessment"),
-            ("nmap scan",        "Direct Nmap port & service discovery"),
-            ("identify tech stack on localhost", "WhatWeb technology profiling"),
-            ("scan for vulnerabilities on localhost", "Nuclei template-driven CVE scanner"),
-            ("check ssl on mysite.com", "SSLyze TLS/SSL cryptographic audit"),
-            ("find hidden directories", "Gobuster wordlist directory enumeration"),
+            ("— Security Scans (Autonomous Bug Hunter) —", ""),
+            ("scan testphp.vulnweb.com",       "Full autonomous security assessment"),
+            ("nmap scan on example.com",        "Direct Nmap port & service discovery"),
+            ("sqlmap on http://target/page.php?id=1", "SQL injection test"),
+            ("brute force ssh on 192.168.1.1", "Hydra online password cracker"),
+            ("crack hashes /path/to/hash.txt", "John / Hashcat offline cracking"),
+            ("find subdomains of target.com",  "Subfinder / Amass enumeration"),
+            ("check ssl on mysite.com",         "SSLyze TLS/SSL cryptographic audit"),
+            ("find hidden directories",         "Gobuster wordlist directory enumeration"),
+            ("wordpress scan on wp.example.com", "WPScan WordPress vulnerability scanner"),
             ("/scan <target>",   "Force scan mode explicitly"),
             ("/chat <message>",  "Force conversational chat mode explicitly"),
         ]
@@ -569,6 +594,71 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
         elif lower in ("tools", "list tools", "capabilities"):
             print_tools(orchestrator.tool_registry)
 
+        elif lower in ("kali tools", "kalitools", "kali-tools"):
+            # Show all Kali Linux tools the runner knows about
+            from backend.services.kali_tool_runner import list_available_tools
+            tools_list = list_available_tools()
+            if HAS_RICH:
+                console.rule("[bold cyan]KALI TOOL RUNNER — ALL TOOLS[/bold cyan]", style="cyan")
+                table = Table(box=box.ROUNDED, show_header=True, header_style="bold cyan", border_style="dim")
+                table.add_column("Tool ID", style="cyan bold", no_wrap=True)
+                table.add_column("Binary", style="yellow")
+                table.add_column("Description", style="white")
+                table.add_column("Installed", justify="center")
+                for t in tools_list:
+                    table.add_row(t["tool_id"], t["binary"], t["description"], t["installed"])
+                console.print(table)
+            else:
+                print("─── KALI TOOL RUNNER ───")
+                for t in tools_list:
+                    print(f"  {t['tool_id']:<15} [{t['installed']}]  {t['description']}")
+            rprint("")
+
+        elif lower in ("yes", "authorized", "authorised", "i have permission",
+                       "i own it", "confirmed", "confirm", "proceed", "i have authorization"):
+            # Grant consent for the current persistent target or the last one
+            from backend.services.security.consent_gate import get_consent_gate
+            gate = get_consent_gate()
+            if persistent_target:
+                gate.grant_consent(persistent_target, acknowledgement=user_input)
+                orchestrator.authorize_target(persistent_target)
+                rprint(f"  [bold green]✔  Authorization confirmed for:[/bold green] [cyan]{persistent_target}[/cyan]")
+                rprint("  [dim]You may now run your scan command again.[/dim]")
+            else:
+                rprint("  [yellow]No active target to authorize. Use: target <host> first.[/yellow]")
+            rprint("")
+
+        elif lower.startswith("read file ") or lower.startswith("open file "):
+            # Secure file access
+            file_path = user_input.split(" ", 2)[2].strip()
+            from backend.services.file_access import read_user_path
+            result = read_user_path(file_path)
+            if result.success:
+                rprint(f"\n  [bold green]✔ File:[/bold green] [cyan]{result.path}[/cyan]  ({result.size_bytes:,} bytes)")
+                if result.truncated:
+                    rprint("  [yellow]  (truncated to 2 MB)[/yellow]")
+                if HAS_RICH:
+                    console.print(Markdown(f"```\n{result.content[:4000]}\n```"))
+                else:
+                    print(result.content[:4000])
+            else:
+                rprint(f"  [bold red]✘ File access error:[/bold red] {result.error}")
+            rprint("")
+
+        elif lower.startswith("ls ") or lower.startswith("list dir "):
+            # List directory
+            dir_path = user_input.split(" ", 1)[1].strip()
+            from backend.services.file_access import list_directory
+            result = list_directory(dir_path)
+            if result.success:
+                if HAS_RICH:
+                    console.print(Markdown(f"```\n{result.content}\n```"))
+                else:
+                    print(result.content)
+            else:
+                rprint(f"  [bold red]✘ Directory error:[/bold red] {result.error}")
+            rprint("")
+
         elif lower in ("clear", "cls"):
             os.system("cls" if sys.platform == "win32" else "clear")
             chat_history.clear()
@@ -579,10 +669,14 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
             if new_target:
                 persistent_target = new_target
                 orchestrator.authorize_target(persistent_target)
+                # Also grant consent in ConsentGate for this target
+                from backend.services.security.consent_gate import get_consent_gate
+                gate = get_consent_gate()
+                gate.grant_consent(persistent_target, acknowledgement="user set via target command")
                 if persistent_target in ("*", "all", "any"):
                     rprint(f"  [green]✔[/green]  [bold yellow]HexStrike Mode Enabled:[/bold yellow] Any target is now authorized for scanning!")
                 else:
-                    rprint(f"  [green]✔[/green]  Target set to: [cyan bold]{persistent_target}[/cyan bold] (Authorized for scanning)")
+                    rprint(f"  [green]✔[/green]  Target set to: [cyan bold]{persistent_target}[/cyan bold] (Authorized & consented for scanning)")
             else:
                 rprint("[red]  Usage: target <hostname, IP, URL, or * for all>[/red]")
 

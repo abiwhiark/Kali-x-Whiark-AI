@@ -28,6 +28,9 @@ from backend.models.schemas import (
 from backend.services.gemini.client import create_ai_client, AIResponse
 from backend.services.tool_registry.registry import ToolRegistry, create_registry
 from backend.services.security.validator import SecurityValidator
+from backend.services.security.consent_gate import get_consent_gate, ConsentRequiredError
+from backend.services.kali_tool_runner import run_tool as kali_run_tool, choose_tool, list_available_tools
+from backend.services.file_access import read_user_path, list_directory
 from backend.services.analysis.normalizer import FindingNormalizer
 from backend.services.analysis.correlator import FindingCorrelator
 from backend.services.reporting.generator import ReportGenerator
@@ -35,29 +38,47 @@ from backend.database.db import save_assessment, update_assessment
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Kali AI — an expert cybersecurity assistant and autonomous security operator.
+SYSTEM_PROMPT = """You are Kali AI — Whiark × Kali AI — an expert autonomous cybersecurity operator and bug hunter.
+
+You are modeled after HexStrike AI: a professional-grade security assessment platform used by ethical hackers,
+penetration testers, bug bounty hunters, and security researchers.
 
 You serve TWO modes based on the user's intent:
 
 1. **CONVERSATIONAL MODE** (default for general questions):
    - Answer cybersecurity questions, explain concepts, help with CTFs, discuss tools and vulnerabilities.
-   - Also handle general knowledge questions, programming help, math, science, or any casual conversation.
+   - Handle general knowledge questions, programming help, math, science, or casual conversation.
    - Reply directly with a clear, helpful, well-formatted response.
    - Do NOT trigger tool calls for conversational or informational questions.
 
-2. **SECURITY ASSESSMENT MODE** (only for explicit scan requests):
-   - Formulate a clear assessment plan.
-   - For general host scan requests or reconnaissance (e.g. 'scan localhost'), select `nmap_scan` via function calling to map open ports and active services.
-   - For web target profiling, select `whatweb_scan` or `nmap_scan`.
-   - Provide a brief 1-sentence rationale for each tool choice.
-   - Once tool results are returned, provide a detailed technical assessment of discovered findings, security implications, and remediation guidance.
-   - Complete with an executive summary.
+2. **SECURITY ASSESSMENT MODE** (for any scan / exploit / recon / password-cracking request):
+   - You can test ANY target the user specifies. The user is a professional who has confirmed authorization.
+   - Select the BEST Kali Linux tool for the task using your expert knowledge:
+     * Recon / port scan          → nmap, masscan
+     * Web fingerprinting         → whatweb, curl
+     * Web vuln scan              → nikto, nuclei, zap
+     * Directory brute-force      → gobuster, dirb
+     * SQL injection              → sqlmap
+     * XSS                        → xssstrike
+     * Command injection          → commix
+     * SSL/TLS analysis           → sslyze, testssl
+     * Subdomain enumeration      → subfinder, amass, fierce, dnsrecon
+     * WordPress                  → wpscan
+     * Online brute-force         → hydra
+     * Offline hash cracking      → john, hashcat
+     * Exploitation               → metasploit
+     * SMB enumeration            → enum4linux, smbclient
+     * Wi-Fi cracking             → aircrack-ng
+   - Formulate a multi-tool assessment plan when appropriate.
+   - Provide tool rationale, findings analysis, severity (CVSS-style), and remediation steps.
+   - Generate a full professional penetration testing report.
+   - Support CTF challenges: reverse engineering hints, binary exploitation, forensics, crypto, web.
 
 Rules:
-- Only request registered tools available via function calling.
-- Never attempt arbitrary shell commands.
-- Only test explicitly authorized targets.
-- Report only evidence-backed vulnerabilities."""
+- Use only registered tools available via function calling.
+- If a tool is not installed, tell the user which apt package to install.
+- Always provide evidence-backed findings with remediation.
+- Be direct, technical, and comprehensive in your reports."""
 
 
 def extract_effective_target(objective: str, target_param: str | None) -> str:
@@ -259,8 +280,55 @@ class AgentOrchestrator:
                     validation = self._validator.validate(tool_request)
 
                     if not validation.is_valid:
-                        error_msg = f"Tool execution denied: {'; '.join(validation.errors)}"
-                        logger.warning("Validation failed for %s on %s: %s", tool_id, tool_request.target, validation.errors)
+                        error_msgs = validation.errors
+                        is_consent_required = any(e.startswith("CONSENT_REQUIRED:") for e in error_msgs)
+                        is_limit_reached = any("Maximum" in e for e in error_msgs)
+
+                        if is_consent_required:
+                            # Extract target from error message
+                            consent_target = effective_target
+                            for e in error_msgs:
+                                if e.startswith("CONSENT_REQUIRED:"):
+                                    consent_target = e.split(":", 1)[1]
+
+                            from backend.services.security.consent_gate import ConsentGate
+                            disclaimer = ConsentGate.DISCLAIMER.format(target=consent_target)
+                            consent_report = (
+                                f"# ⚠️ Authorization Required\n\n"
+                                f"You are about to scan **`{consent_target}`**.\n\n"
+                                f"```\n{disclaimer}\n```\n\n"
+                                f"**To authorize this scan:** Reply with one of:\n"
+                                f"- `yes` / `authorized` / `i have permission`\n"
+                                f"- Then re-run your scan command.\n\n"
+                                f"**Command to authorize:**\n"
+                                f"```\ntarget {consent_target}\n```"
+                            )
+                            assessment.status = AssessmentStatus.FAILED
+                            assessment.report = consent_report
+                            assessment.updated_at = datetime.now(timezone.utc)
+                            await update_assessment(assessment)
+                            yield AgentEvent(
+                                event_type="consent_required",
+                                data={
+                                    "target": consent_target,
+                                    "report": consent_report,
+                                    "step": step_number,
+                                },
+                            )
+                            yield AgentEvent(
+                                event_type="complete",
+                                data={
+                                    "report": consent_report,
+                                    "summary": f"Authorization required for {consent_target}",
+                                    "step": step_number,
+                                    "total_tool_calls": 0,
+                                    "total_findings": 0,
+                                },
+                            )
+                            break
+
+                        error_msg = f"Tool execution denied: {'; '.join(error_msgs)}"
+                        logger.warning("Validation failed for %s on %s: %s", tool_id, tool_request.target, error_msgs)
 
                         step = AgentStep(
                             step_number=step_number,
@@ -275,38 +343,22 @@ class AgentOrchestrator:
                             event_type="validation_failed",
                             data={
                                 "tool_id": tool_id,
-                                "errors": validation.errors,
+                                "errors": error_msgs,
                                 "step": step_number,
                                 "target": effective_target,
                             },
                         )
 
-                        # If target is unauthorized or limits reached, stop assessment immediately
-                        is_unauthorized_target = any("not in the allowed targets list" in e for e in validation.errors)
-                        is_limit_reached = any("Maximum" in e for e in validation.errors)
-
-                        if is_unauthorized_target or is_limit_reached:
+                        if is_limit_reached:
                             assessment.status = AssessmentStatus.FAILED
                             report_md = (
-                                f"# KALI AI - SECURITY POLICY BLOCK\n\n"
-                                f"**Target:** `{effective_target}`  \n"
-                                f"**Status:** Blocked by Security Validator  \n\n"
-                                f"**Details:**\n"
-                                f"- {'; '.join(validation.errors)}\n\n"
-                                f"### How to Authorize This Target:\n"
-                                f"Kali AI strictly enforces scope boundaries to prevent unauthorized scanning. "
-                                f"If you own or have written authorization to test `{effective_target}`:\n"
-                                f"1. Open your `.env` file in the project root.\n"
-                                f"2. Add `{effective_target}` to the `ALLOWED_TARGETS` list:\n"
-                                f"   ```ini\n"
-                                f"   ALLOWED_TARGETS={self._settings.ALLOWED_TARGETS},{effective_target}\n"
-                                f"   ```\n"
-                                f"3. Re-run your assessment."
+                                f"# KALI AI - LIMIT REACHED\n\n"
+                                f"**Target:** `{effective_target}`\n"
+                                f"**Details:** {'; '.join(error_msgs)}"
                             )
                             assessment.report = report_md
                             assessment.updated_at = datetime.now(timezone.utc)
                             await update_assessment(assessment)
-
                             yield AgentEvent(
                                 event_type="complete",
                                 data={

@@ -404,37 +404,49 @@ def print_help() -> None:
         table.add_column("cmd",  style="cyan bold", no_wrap=True)
         table.add_column("desc", style="white")
         cmds = [
-            ("help / ?",         "Show this help manual"),
-            ("tools",            "List registered AI security tools and their execution status"),
-            ("kali tools",       "List ALL Kali Linux tools the runner knows (shows if installed)"),
-            ("target <host>",    "Authorize + set a persistent scan target (e.g. target testphp.vulnweb.com)"),
-            ("target *",         "HexStrike Mode — authorize ALL targets (you accept responsibility)"),
-            ("yes / authorized", "Confirm authorization for the current target after consent prompt"),
-            ("read file <path>", "Read a file from the host system (absolute path required)"),
-            ("ls <path>",        "List files in a directory on the host system"),
-            ("target",           "View current active target"),
-            ("clear / cls",      "Clear terminal screen and conversation history"),
-            ("reset",            "Clear configuration and re-run setup"),
-            ("quit / exit",      "Exit Kali AI"),
-            ("",                 ""),
-            ("— Conversational Chat —", ""),
-            ("what is sql injection?", "Ask any cybersecurity question or concept"),
-            ("how do I exploit CVE-2021-41773?", "Technical vulnerability & exploitation guidance"),
-            ("write a python script to scan ports", "Code generation & scripting"),
-            ("explain why port 80 was open", "Follow-up questions remembering previous context"),
-            ("",                 ""),
-            ("— Security Scans (Autonomous Bug Hunter) —", ""),
-            ("scan testphp.vulnweb.com",       "Full autonomous security assessment"),
-            ("nmap scan on example.com",        "Direct Nmap port & service discovery"),
-            ("sqlmap on http://target/page.php?id=1", "SQL injection test"),
-            ("brute force ssh on 192.168.1.1", "Hydra online password cracker"),
-            ("crack hashes /path/to/hash.txt", "John / Hashcat offline cracking"),
-            ("find subdomains of target.com",  "Subfinder / Amass enumeration"),
-            ("check ssl on mysite.com",         "SSLyze TLS/SSL cryptographic audit"),
-            ("find hidden directories",         "Gobuster wordlist directory enumeration"),
-            ("wordpress scan on wp.example.com", "WPScan WordPress vulnerability scanner"),
-            ("/scan <target>",   "Force scan mode explicitly"),
-            ("/chat <message>",  "Force conversational chat mode explicitly"),
+            ("help / ?",                   "Show this help manual"),
+            ("tools",                      "List registered AI security tools"),
+            ("kali tools",                 "List ALL 28 Kali tools the runner knows"),
+            ("target <host>",              "Authorize + set a persistent scan target"),
+            ("target *",                   "HexStrike Mode — scan ANY target"),
+            ("yes / authorized",           "Confirm authorization for current target"),
+            ("clear / cls",                "Clear screen and conversation history"),
+            ("quit / exit",                "Exit Kali AI"),
+            ("",                           ""),
+            ("— File System Access —",     ""),
+            ("read file /path/to/file",    "Read a host file (absolute path)"),
+            ("ls /path/to/dir",            "List files in a directory"),
+            ("",                           ""),
+            ("— Terminal Launcher —",      ""),
+            ("open terminal <command>",    "Open new terminal running any command"),
+            ("open tool nmap on <host>",   "Open terminal running a specific Kali tool"),
+            ("open metasploit",            "Open interactive Metasploit console"),
+            ("terminals",                  "List all opened terminal sessions"),
+            ("",                           ""),
+            ("— Browser Launcher —",       ""),
+            ("open browser <URL>",         "Open Firefox/Chromium on a website"),
+            ("browse zap <URL>",           "Open browser proxied through ZAP (passive scan)"),
+            ("open zap",                   "Open OWASP ZAP GUI"),
+            ("",                           ""),
+            ("— OWASP ZAP Auto-Scanner —", ""),
+            ("zap scan <URL>",             "Full ZAP scan: spider + active scan + report"),
+            ("",                           ""),
+            ("— Autonomous Security Scans —", ""),
+            ("scan <target>",              "Full AI-driven security assessment"),
+            ("nmap scan on <target>",      "Port & service discovery"),
+            ("sqlmap on <URL>",            "SQL injection test"),
+            ("brute force ssh on <host>",  "Hydra online password cracker"),
+            ("crack hashes /path/hash",    "John / Hashcat offline cracking"),
+            ("find subdomains of <domain>","Subfinder / Amass enumeration"),
+            ("check ssl on <host>",        "SSLyze TLS/SSL audit"),
+            ("wordpress scan on <URL>",    "WPScan WordPress scanner"),
+            ("/scan <target>",             "Force scan mode"),
+            ("/chat <message>",            "Force chat mode"),
+            ("",                           ""),
+            ("— Conversational Chat —",    ""),
+            ("what is sql injection?",     "Ask any cybersecurity question"),
+            ("explain CVE-2021-44228",     "Vulnerability explanations"),
+            ("write a python port scanner","Code generation"),
         ]
         for cmd, desc in cmds:
             if cmd == "":
@@ -659,6 +671,139 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
                 rprint(f"  [bold red]✘ Directory error:[/bold red] {result.error}")
             rprint("")
 
+        # ── TERMINAL LAUNCHER ────────────────────────────────────────
+        elif lower.startswith("open terminal "):
+            command = user_input[len("open terminal "):].strip()
+            if not command:
+                rprint("  [red]Usage: open terminal <command>[/red]")
+            else:
+                from backend.services.terminal_launcher import open_terminal
+                rprint(f"  [bold cyan]🖥️  Opening terminal:[/bold cyan] [yellow]{command}[/yellow]")
+                result = open_terminal(command, title=f"Kali AI — {command[:40]}")
+                if isinstance(result, str):
+                    rprint(f"  [bold red]✘[/bold red] {result}")
+                else:
+                    rprint(f"  [bold green]✔[/bold green]  Terminal opened! (session: [dim]{result.session_id}[/dim])")
+                    rprint(f"  [dim]Output saved to: {result.log_file}[/dim]")
+            rprint("")
+
+        elif lower.startswith("open tool "):
+            rest = user_input[len("open tool "):].strip()
+            parts = rest.split(" on ", 1)
+            tool_name = parts[0].strip()
+            tgt = parts[1].strip() if len(parts) > 1 else (persistent_target or "localhost")
+            from backend.services.terminal_launcher import open_tool_terminal
+            rprint(f"  [bold cyan]🖥️  Opening terminal:[/bold cyan] [yellow]{tool_name.upper()}[/yellow] → [cyan]{tgt}[/cyan]")
+            result = open_tool_terminal(tool_name, target=tgt)
+            if isinstance(result, str):
+                rprint(f"  [bold red]✘[/bold red] {result}")
+            else:
+                rprint(f"  [bold green]✔[/bold green]  [yellow]{tool_name.upper()}[/yellow] running in new terminal! (pid: {result.pid})")
+            rprint("")
+
+        elif lower in ("open metasploit", "open msf", "msfconsole"):
+            from backend.services.terminal_launcher import open_metasploit_terminal
+            rprint("  [bold cyan]🖥️  Opening Metasploit console...[/bold cyan]")
+            result = open_metasploit_terminal()
+            if isinstance(result, str):
+                rprint(f"  [bold red]✘[/bold red] {result}")
+            else:
+                rprint(f"  [bold green]✔[/bold green]  msfconsole opened! (pid: {result.pid})")
+            rprint("")
+
+        elif lower == "terminals":
+            from backend.services.terminal_launcher import list_sessions
+            sessions = list_sessions()
+            if not sessions:
+                rprint("  [dim]No terminal sessions opened yet.[/dim]")
+            else:
+                rprint(f"  [bold cyan]Open terminal sessions:[/bold cyan] {len(sessions)}")
+                for s in sessions:
+                    rprint(f"    [yellow]{s['session_id']}[/yellow]  [{s['terminal']}]  {s['command'][:50]}")
+            rprint("")
+
+        # ── BROWSER LAUNCHER ─────────────────────────────────────────
+        elif (lower.startswith("open browser ") or lower.startswith("open site ")
+              or lower.startswith("browse ")):
+            import re as _re
+            url_part = _re.sub(r'^(open browser|open site|browse)\s+', '', user_input.strip(),
+                                flags=_re.IGNORECASE).strip()
+            if not url_part:
+                rprint("  [red]Usage: open browser <URL>[/red]")
+            else:
+                from backend.services.browser_launcher import open_browser
+                rprint(f"  [bold cyan]🌐  Opening browser:[/bold cyan] [yellow]{url_part}[/yellow]")
+                result = open_browser(url_part)
+                if isinstance(result, str):
+                    rprint(f"  [bold red]✘[/bold red] {result}")
+                else:
+                    rprint(f"  [bold green]✔[/bold green]  Browser opened → [cyan]{result.url}[/cyan]")
+            rprint("")
+
+        elif lower.startswith("open browser zap ") or lower.startswith("browse zap "):
+            import re as _re
+            url_part = _re.sub(r'^(open browser zap|browse zap)\s+', '', user_input.strip(),
+                                flags=_re.IGNORECASE).strip()
+            if not url_part:
+                rprint("  [red]Usage: browse zap <URL>[/red]")
+            else:
+                from backend.services.browser_launcher import open_browser_with_zap_proxy
+                rprint(f"  [bold cyan]🌐  Browser via ZAP proxy:[/bold cyan] [yellow]{url_part}[/yellow]")
+                rprint("  [dim]  All traffic will be intercepted and passively scanned by ZAP...[/dim]")
+                result = open_browser_with_zap_proxy(url_part)
+                if isinstance(result, str):
+                    rprint(f"  [bold red]✘[/bold red] {result}")
+                else:
+                    rprint(f"  [bold green]✔[/bold green]  Browser → ZAP → [cyan]{result.url}[/cyan]")
+            rprint("")
+
+        # ── OWASP ZAP SCANNER ────────────────────────────────────────
+        elif lower.startswith("zap scan ") or lower.startswith("zap "):
+            import re as _re
+            url_part = _re.sub(r'^zap( scan)?\s+', '', user_input.strip(),
+                                flags=_re.IGNORECASE).strip()
+            tgt = url_part or persistent_target or "localhost"
+            if not tgt.startswith(("http://", "https://")):
+                tgt = "http://" + tgt
+
+            # Consent check
+            from backend.services.security.consent_gate import get_consent_gate
+            gate = get_consent_gate()
+            parsed_host = tgt.split("//", 1)[1].split("/")[0]
+            if not gate.is_consented(parsed_host):
+                rprint(f"\n  [bold yellow]⚠️  Authorization required for:[/bold yellow] [cyan]{parsed_host}[/cyan]")
+                rprint("  Type [bold green]yes[/bold green] then re-run the ZAP scan.")
+            else:
+                rprint(f"\n  [bold cyan]🕷️  OWASP ZAP Auto-Scan:[/bold cyan] [yellow]{tgt}[/yellow]")
+                rprint("  [dim]  ① Starting ZAP daemon  ② Opening browser live  ③ Spidering  ④ Active scan  ⑤ Report...[/dim]\n")
+                from backend.services.zap_scanner import zap_scan
+                scan_result = await zap_scan(tgt, open_browser_live=True)
+                if not scan_result.success:
+                    rprint(f"  [bold red]✘ ZAP failed:[/bold red] {scan_result.error}")
+                    rprint("  [dim]Make sure ZAP is installed: sudo apt install zaproxy[/dim]")
+                else:
+                    rprint(f"  [bold green]✔  ZAP complete![/bold green]  "
+                           f"URLs: [cyan]{scan_result.spider_urls}[/cyan]  "
+                           f"Findings: [bold yellow]{len(scan_result.findings)}[/bold yellow]  "
+                           f"Time: {scan_result.duration_seconds:.0f}s")
+                    if HAS_RICH:
+                        console.rule("[bold red]OWASP ZAP REPORT[/bold red]", style="red")
+                        console.print(Markdown(scan_result.report_section()))
+                    else:
+                        print(scan_result.report_section())
+                    chat_history.append({"role": "user", "content": f"ZAP scan on {tgt}"})
+                    chat_history.append({"role": "assistant",
+                                         "content": scan_result.report_section()[:800]})
+            rprint("")
+
+        elif lower in ("open zap", "zap gui", "open zaproxy"):
+            from backend.services.zap_scanner import open_zap_gui
+            rprint("  [bold cyan]🕷️  Opening OWASP ZAP GUI...[/bold cyan]")
+            msg = open_zap_gui()
+            rprint(f"  [bold green]{msg}[/bold green]")
+            rprint("")
+
+        # ────────────────────────────────────────────────────────────
         elif lower in ("clear", "cls"):
             os.system("cls" if sys.platform == "win32" else "clear")
             chat_history.clear()

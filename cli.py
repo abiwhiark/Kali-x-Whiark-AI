@@ -88,7 +88,7 @@ def print_banner(demo_mode: bool, provider: str = "gemini") -> None:
         console.print(mode_badge)
         console.print("[dim]  Chat naturally like ChatGPT/Gemini, or give scan instructions directly.[/dim]")
         console.print("[dim]  Type [bold]help[/bold] for commands, [bold]tools[/bold] to view tool registry, [bold]quit[/bold] to exit.[/dim]")
-        console.print("[dim]  Type [bold cyan]1-9[/bold cyan] or [bold cyan]provider[/bold cyan] to select model & enter API key anytime.[/dim]")
+        console.print("[dim]  Type [bold cyan]setkey[/bold cyan] to change your Gemini API key anytime.[/dim]")
         console.rule(style="dim")
     else:
         print(BANNER)
@@ -97,7 +97,7 @@ def print_banner(demo_mode: bool, provider: str = "gemini") -> None:
         mode = "DEMO MODE" if demo_mode else f"LIVE ({provider.upper()})"
         print(f"  Mode: [{mode}] — HexStrike AI Model")
         print("  Chat naturally or give scan commands directly.")
-        print("  Type '1'-'9' or 'provider' to select model & enter API key.")
+        print("  Type 'setkey' to change your Gemini API key.")
         print("  Type 'help' for commands, 'quit' to exit.")
         print("─" * 75)
     print()
@@ -453,12 +453,10 @@ def print_help() -> None:
             ("/scan <target>",             "Force scan mode"),
             ("/chat <message>",            "Force chat mode"),
             ("",                           ""),
-            ("— AI Provider —",            ""),
-            ("provider",                   "Setup wizard: Gemini/OpenAI/Anthropic/Ollama/Demo"),
-            ("setkey",                     "Change API key mid-session (no restart needed)"),
-            ("reset config",               "Wipe config and re-run setup wizard"),
-            ("/model <name>",              "Switch model on the fly"),
-            ("/models",                    "Show current provider and model"),
+            ("— AI Configuration —",       ""),
+            ("setkey",                     "Change/enter Gemini API key (hidden/encrypted)"),
+            ("reset",                      "Reset config and re-enter API key"),
+            ("/model <name>",              "Switch Gemini model on the fly"),
             ("",                           ""),
             ("— Conversational Chat —",    ""),
             ("what is sql injection?",     "Ask any cybersecurity question"),
@@ -848,17 +846,14 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
             else:
                 rprint("[dim]  No target set. Use: target <hostname or IP>[/dim]")
 
-        # ── Model Selection [1-9], Provider, or Setup ────────────────
-        elif lower in ("1", "2", "3", "4", "5", "6", "7", "8", "9",
-                       "provider", "setup", "models", "select model", "model",
-                       "google gemini", "gemini", "ollama", "openai", "anthropic", "demo"):
+        # ── API Key Setup / Change ──────────────────────────────────
+        elif lower in ("setkey", "set key", "apikey", "set api key", "changekey", "setup", "provider", "gemini", "key"):
             try:
                 from backend.setup_wizard import run_setup_wizard
-                chosen_num = lower if lower in ("1", "2", "3", "4", "5", "6", "7", "8", "9") else None
-                run_setup_wizard(choice=chosen_num, force=True)
+                run_setup_wizard(force=True)
                 load_dotenv(ROOT / ".env", override=True)
                 cfg = initialize_from_env()
-                # Re-create orchestrator with new provider & model
+                # Re-create orchestrator with updated key
                 from backend.services.agent.orchestrator import AgentOrchestrator
                 from backend.core.config import reload_settings
                 reload_settings()
@@ -869,19 +864,6 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
                 rprint("  [dim]Type your message or scan command now.[/dim]\n")
             except Exception as _pe:
                 rprint(f"  [red]Setup error:[/red] {_pe}")
-
-        elif lower in ("setkey", "set key", "apikey", "set api key", "changekey"):
-            try:
-                from backend.setup_wizard import change_api_key
-                change_api_key()
-                load_dotenv(ROOT / ".env", override=True)
-                from backend.core.config import reload_settings
-                reload_settings()
-                from backend.services.agent.orchestrator import AgentOrchestrator
-                orchestrator = AgentOrchestrator()
-                rprint("  [green]✔[/green]  API key updated. New session started.")
-            except Exception as _ke:
-                rprint(f"  [red]✘[/red]  Error updating key: {_ke}")
 
         elif lower.startswith("/model "):
             new_model = user_input[7:].strip()

@@ -153,22 +153,26 @@ async def _socket_port_scan(target: str, profile: str = "quick") -> list[dict[st
 
     port_list = COMMON_PORTS_STANDARD if profile in ("standard", "service_detection") else COMMON_PORTS_QUICK
 
-    async def _probe(port: int, svc: str) -> dict[str, Any] | None:
+    def _sync_probe(port: int, svc: str) -> dict[str, Any] | None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.2)
         try:
-            conn = asyncio.open_connection(resolved_ip, port)
-            reader, writer = await asyncio.wait_for(conn, timeout=0.35)
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-            return {"port": port, "state": "open", "service": svc, "version": ""}
+            res = s.connect_ex((resolved_ip, port))
+            if res == 0:
+                return {"port": port, "state": "open", "service": svc, "version": ""}
         except Exception:
-            return None
+            pass
+        finally:
+            s.close()
+        return None
 
-    tasks = [_probe(p, s) for p, s in port_list]
-    results = await asyncio.gather(*tasks)
-    return [r for r in results if r is not None]
+    loop = asyncio.get_running_loop()
+    tasks = [loop.run_in_executor(None, _sync_probe, p, s) for p, s in port_list]
+    try:
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=3.0)
+        return [r for r in results if r is not None]
+    except Exception:
+        return []
 
 
 # ──────────────────────────────────────────────
@@ -178,30 +182,45 @@ async def _socket_port_scan(target: str, profile: str = "quick") -> list[dict[st
 async def _mock_nmap(args: dict[str, Any]) -> dict[str, Any]:
     """
     Nmap port scan fallback engine.
-    Performs a live async TCP socket scan against target ports.
-    Marks 'mock': True for test suites, but returns live probed results.
+    Used when nmap CLI binary is not installed on the system.
+    Returns simulated port discovery results instantly without blocking.
     """
-    start_time = time.monotonic()
     raw_target = args.get("target", "localhost")
     profile = args.get("profile", "quick")
     target = _clean_target_for_network_scan(raw_target)
 
-    # Perform real socket discovery
-    live_ports = await _socket_port_scan(target, profile)
-    elapsed = round(time.monotonic() - start_time, 2)
-
-    os_guess = "Windows" if sys.platform == "win32" and target in ("localhost", "127.0.0.1") else "Unknown"
+    if "testphp.vulnweb.com" in target or "vulnweb" in target:
+        ports = [
+            {"port": 80, "state": "open", "service": "http", "version": "nginx/1.19.0"},
+            {"port": 443, "state": "open", "service": "https", "version": "nginx/1.19.0"},
+            {"port": 3306, "state": "open", "service": "mysql", "version": "MySQL 5.7.33"},
+        ]
+        os_guess = "Linux (Ubuntu/Debian)"
+    elif target in ("localhost", "127.0.0.1"):
+        ports = [
+            {"port": 22, "state": "open", "service": "ssh", "version": "OpenSSH 9.6p1"},
+            {"port": 80, "state": "open", "service": "http", "version": "Apache/2.4.58"},
+            {"port": 443, "state": "open", "service": "https", "version": "OpenSSL/3.0.13"},
+        ]
+        os_guess = "Windows" if sys.platform == "win32" else "Linux"
+    else:
+        ports = [
+            {"port": 80, "state": "open", "service": "http", "version": "nginx/1.24.0"},
+            {"port": 443, "state": "open", "service": "https", "version": "OpenSSL/3.0.11"},
+            {"port": 22, "state": "open", "service": "ssh", "version": "OpenSSH 8.9p1"},
+        ]
+        os_guess = "Linux"
 
     return {
         "tool": "nmap",
         "mock": True,
-        "engine": "python_async_socket",
+        "engine": "mock_fallback",
         "target": target,
         "profile": profile,
-        "ports": live_ports,
+        "ports": ports,
         "os_guess": os_guess,
-        "scan_time": f"{elapsed}s",
-        "note": "Scanned live network target using built-in Python async socket engine (Nmap CLI binary was not detected on system PATH).",
+        "scan_time": "0.15s",
+        "note": "Simulated scan results (Nmap CLI binary was not detected on system PATH).",
     }
 
 

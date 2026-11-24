@@ -11,6 +11,7 @@ from backend.database import db
 @pytest.fixture(autouse=True)
 async def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("ALLOWED_TARGETS", "127.0.0.1,localhost,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16")
     from backend.core.config import get_settings
     get_settings.cache_clear()
     test_db_file = str(tmp_path / "test_orchestrator_kali_ai.db")

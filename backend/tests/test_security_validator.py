@@ -9,6 +9,15 @@ from backend.services.tool_registry.registry import create_default_registry
 from backend.services.security.validator import SecurityValidator
 
 
+@pytest.fixture(autouse=True)
+def isolate_validator_test(monkeypatch):
+    monkeypatch.setenv("ALLOWED_TARGETS", "127.0.0.1,localhost,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16")
+    from backend.core.config import get_settings
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def validator():
     registry = create_default_registry()

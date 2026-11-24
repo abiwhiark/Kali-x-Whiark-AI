@@ -95,17 +95,29 @@ def extract_effective_target(objective: str, target_param: str | None) -> str:
 
     # 4. Look for target following "on <host>", "against <host>", "target <host>"
     kw_match = re.search(r"\b(?:on|against|target)\s+([a-zA-Z0-9_.-]+)", objective, re.IGNORECASE)
+    cand = None
     if kw_match:
         cand = kw_match.group(1).strip(",;:\"'()[]{}<>!?")
-        if cand.lower() not in ("this", "all", "the", "a", "an", "it", "ports", "services", "open", "nmap", "nuclei"):
-            return cand
+        if cand.lower() in ("this", "all", "the", "a", "an", "it", "ports", "services", "open", "nmap", "nuclei"):
+            cand = None
 
     # 5. Check first token if it has a dot or dash
-    tokens = objective.split()
-    if tokens:
-        first = tokens[0].strip(",;:\"'()[]{}<>!?")
-        if "." in first and not first.lower().endswith((".py", ".json", ".txt", ".sh", ".md", ".env")):
-            return first.split(":")[0]
+    if not cand:
+        tokens = objective.split()
+        if tokens:
+            first = tokens[0].strip(",;:\"'()[]{}<>!?")
+            if "." in first and not first.lower().endswith((".py", ".json", ".txt", ".sh", ".md", ".env")):
+                cand = first.split(":")[0]
+
+    # Resolve alias against allowed targets (e.g. 'vulnweb' -> 'testphp.vulnweb.com')
+    if cand:
+        cand_lower = cand.lower()
+        settings = get_settings()
+        for allowed_entry in settings.allowed_targets_list:
+            if "/" not in allowed_entry and not allowed_entry.replace(".", "").isdigit():
+                if cand_lower in allowed_entry.lower():
+                    return allowed_entry
+        return cand
 
     return target_param.strip() if target_param and target_param.strip() else "localhost"
 
@@ -137,6 +149,11 @@ class AgentOrchestrator:
         """Run the autonomous agent loop and stream AgentEvents."""
         self._validator.reset_counters()
         effective_target = extract_effective_target(objective, target)
+
+        logger.info(
+            "Assessment starting — target=%s, allowed_targets=%s",
+            effective_target, self._settings.allowed_targets_list,
+        )
 
         assessment = Assessment(
             objective=objective,

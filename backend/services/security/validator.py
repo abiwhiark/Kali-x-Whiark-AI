@@ -152,18 +152,42 @@ class SecurityValidator:
         except Exception:
             pass
 
+        hostname_lower = hostname.strip().lower()
+
+        logger.debug(
+            "Validating target '%s' (hostname='%s') against allowed_targets=%s",
+            target, hostname_lower, allowed,
+        )
+
         # 1. HexStrike Wildcard Mode: '*' or 'all' allows scanning any website/IP
         if "*" in allowed or "all" in allowed or "any" in allowed:
+            logger.info("Target '%s' allowed via wildcard mode.", hostname_lower)
             return True, ""
 
         # 2. Dynamically authorized targets in this session
         if hasattr(self, "_session_allowed_targets"):
-            if "*" in self._session_allowed_targets or hostname.lower() in self._session_allowed_targets:
+            if "*" in self._session_allowed_targets or hostname_lower in self._session_allowed_targets:
+                logger.info("Target '%s' allowed via session authorization.", hostname_lower)
                 return True, ""
 
-        # 3. Direct hostname match in ALLOWED_TARGETS
-        if hostname.lower() in [a.lower() for a in allowed]:
+        # 3. Direct hostname match in ALLOWED_TARGETS (exact or suffix)
+        allowed_lower = [a.strip().lower() for a in allowed]
+        if hostname_lower in allowed_lower:
+            logger.info("Target '%s' allowed via exact match.", hostname_lower)
             return True, ""
+
+        # 3b. Subdomain or domain alias match
+        for entry in allowed_lower:
+            # Skip CIDR ranges and IPs for subdomain matching
+            if "/" in entry or entry.replace(".", "").isdigit():
+                continue
+            if (
+                hostname_lower.endswith("." + entry)
+                or entry.endswith("." + hostname_lower)
+                or (len(hostname_lower) >= 4 and hostname_lower in entry)
+            ):
+                logger.info("Target '%s' allowed via match with allowed entry '%s'.", hostname_lower, entry)
+                return True, ""
 
         # 4. Check if hostname is an IP in an allowed CIDR
         try:
@@ -172,14 +196,34 @@ class SecurityValidator:
                 try:
                     network = ipaddress.ip_network(allowed_entry, strict=False)
                     if ip in network:
+                        logger.info("Target IP %s allowed via CIDR %s.", ip, network)
                         return True, ""
                 except ValueError:
                     continue
         except ValueError:
-            # hostname is not an IP — check direct match only
-            pass
+            # hostname is not an IP — try resolving it and checking CIDRs
+            try:
+                import socket
+                resolved_ips = socket.getaddrinfo(hostname, None, socket.AF_INET)
+                resolved_ip_strs = list({info[4][0] for info in resolved_ips})
+                for resolved_ip_str in resolved_ip_strs:
+                    resolved_ip = ipaddress.ip_address(resolved_ip_str)
+                    for allowed_entry in allowed:
+                        try:
+                            network = ipaddress.ip_network(allowed_entry, strict=False)
+                            if resolved_ip in network:
+                                logger.info(
+                                    "Target '%s' resolves to %s, allowed via CIDR %s.",
+                                    hostname, resolved_ip, network,
+                                )
+                                return True, ""
+                        except ValueError:
+                            continue
+            except Exception:
+                pass
 
         return False, (
             f"Target '{hostname}' is not in the allowed targets list. "
+            f"Current ALLOWED_TARGETS: {', '.join(allowed)}. "
             f"To scan any website like HexStrike AI, set ALLOWED_TARGETS=* in .env or type 'target *' in Kali AI."
         )

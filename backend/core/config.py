@@ -4,8 +4,13 @@ Loads settings from .env file using pydantic-settings.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field, computed_field
+
+# Resolve .env relative to the project root (two levels up from this file)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -41,7 +46,7 @@ class Settings(BaseSettings):
         return [t.strip() for t in self.ALLOWED_TARGETS.split(",") if t.strip()]
 
     model_config = {
-        "env_file": ".env",
+        "env_file": str(_ENV_FILE),
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
     }

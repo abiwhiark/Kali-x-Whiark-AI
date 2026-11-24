@@ -620,10 +620,18 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
 
         # ── Autonomous Scan Mode vs Conversational Chat Mode ──
         elif is_scan_request(user_input, has_target=bool(persistent_target)):
+            # Extract inline target from user input if no persistent target is set
+            scan_target = persistent_target
+            if not scan_target:
+                from backend.services.agent.orchestrator import extract_effective_target
+                extracted = extract_effective_target(user_input, None)
+                if extracted and extracted != "localhost":
+                    scan_target = extracted
+
             if HAS_RICH:
                 with console.status("[bold cyan]  Engaging security tool pipeline...[/bold cyan]", spinner="dots"):
                     await asyncio.sleep(0.3)
-            await run_assessment(orchestrator, objective=user_input, target=persistent_target, history=chat_history)
+            await run_assessment(orchestrator, objective=user_input, target=scan_target, history=chat_history)
 
         else:
             # Conversational Chat like ChatGPT / Gemini / HexStrike AI

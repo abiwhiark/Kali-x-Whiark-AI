@@ -1,313 +1,278 @@
-# Kali x Whiark AI — Autonomous Cybersecurity Operator
+# ⚡ Kali x Whiark AI — Autonomous Cybersecurity Operator
 
-> **College Cybersecurity Project**  
-> An autonomous, modular, AI-powered cybersecurity operator (Terminal Agent & Chatbot: **Kali AI**) inspired by HexStrike AI and modern offensive/defensive architectures. Powered by **Google Gemini API** native function calling and local model support (Ollama) with an independent Python execution controller, real security tool registry, security validator, and reactive dashboard.
-
----
-
-## 1. Architectural Philosophy
-
-Kali AI is **our own agent architecture**. We do not use Gemini CLI, nor do we run a pre-packaged agent:
-
-```
-                  USER (Web Browser)
-                         │
-                         ▼
-             React + Vite Frontend Dashboard
-          (AI Chat, Activity Stream, Plan, Findings)
-                         │
-             SSE / REST  ▼
-            FastAPI Backend Controller
-                         │
-      ┌──────────────────┴──────────────────┐
-      │                                     │
-      ▼                                     ▼
-Google Gemini API                   SQLite Database
-(Reasoning Brain &             (Audit Trail, Assessments,
-Function Calling)                       Findings)
-      │
-      │ 1. AI requests tool via Function Call
-      ▼
-Security Tool Registry
-(7 Registered Tools & JSON Schemas)
-      │
-      │ 2. Independent Verification
-      ▼
-Security Validator
-(Target CIDR, Allowed Tools, Parameter Schemas, Max Iterations)
-      │
-      │ 3. Approved Execution
-      ▼
-Tool Execution Controller
-(Mock Phase 1 -> Subprocess / Kali Linux Binaries)
-      │
-      │ 4. Structured Results & Normalized Findings
-      ▼
-Finding Normalizer & Correlator
-(Deduplication, Risk Scoring, Cross-Tool Evidence)
-      │
-      │ 5. Results Feed Back to Gemini
-      ▼
-Gemini Adaptive Decision Loop
-(Analyze evidence -> Decide next action -> Final Report)
-```
-
-- **Brain**: Google Gemini (via `google-genai` SDK and native tool calling).
-- **Controller**: Our Python FastAPI agent backend.
-- **Capabilities**: Pre-defined, strictly constrained security tool wrappers.
-- **Execution Environment**: Authorized Kali Linux or local laboratory.
-- **Safety Boundary**: Security Validator prevents arbitrary command injection, restricts targets to authorized subnets, and enforces loop boundaries.
+> **Whiark × Kali AI** is a professional-grade autonomous cybersecurity assistant and bug hunter.  
+> Inspired by HexStrike AI — it uses real Kali Linux tools, opens terminals & browsers on your behalf,  
+> runs OWASP ZAP scans, cracks passwords, and generates full penetration testing reports.  
+> Powered by **Google Gemini API** with autonomous function calling.
 
 ---
 
-## 2. Security Tool Registry
-
-The agent interacts **only** with registered tool definitions — never arbitrary shell strings:
-
-| Tool ID | Name | Category | Primary Purpose | Risk Level |
-| :--- | :--- | :--- | :--- | :--- |
-| `nmap_scan` | Nmap Scanner | Reconnaissance | Port discovery, exposed services, OS guess | Medium |
-| `whatweb_scan` | WhatWeb Analyzer | Web Analysis | Web server, CMS, language, framework detection | Low |
-| `nuclei_scan` | Nuclei Scanner | Vulnerability Scan | Template-based detection of known CVEs & exposures | Medium |
-| `nikto_scan` | Nikto Scanner | Web Analysis | Server misconfigurations & dangerous files | Medium |
-| `sslyze_scan` | SSLyze Analyzer | SSL/TLS | Protocol versions, ciphers, certificate validation | Low |
-| `zap_scan` | OWASP ZAP Scanner | Web Analysis | Passive/active web application security checks | High |
-| `gobuster_scan` | Gobuster Directory | Discovery | Controlled wordlist-based endpoint discovery | Medium |
-
----
-
-## 3. Defense-in-Depth Security Controls
-
-The agent controller enforces mandatory restrictions that the LLM cannot override:
-1. **Target Allowlisting**: Only hostnames or IP addresses inside `ALLOWED_TARGETS` (e.g., `127.0.0.1`, `localhost`, RFC1918 private subnets `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) can be scanned.
-2. **Strict Parameter Validation**: Arguments are validated against explicit JSON Schemas and enums before execution.
-3. **Execution Limits**: Hard upper bounds on loop iterations (`MAX_AGENT_ITERATIONS = 10`) and total tool calls (`MAX_TOOL_CALLS = 15`) prevent infinite recursion.
-4. **Timeouts**: Every tool execution is wrapped in an async timeout.
-5. **Demonstration Mode**: Clearly distinguished mock execution when no Gemini API key is configured.
-
----
-
-## 4. Quickstart & Installation Guide
-
-### Prerequisites
-- **Git**
-- **Python 3.10+** (Python 3.12 recommended)
-- **Node.js 18+** & **npm** (for web dashboard)
-- **Nmap** (Optional: Kali AI includes a built-in async TCP socket prober fallback if Nmap CLI is not installed)
-
----
-
-### Method A: Kali Linux / Debian / Ubuntu (Recommended for Security Testing)
-
-Open your terminal and run:
+## 🚀 Quick Install on Kali Linux (Copy & Paste)
 
 ```bash
-# 1. Install system prerequisites
-sudo apt update
-sudo apt install -y git python3 python3-pip python3-venv nmap nodejs npm
-
-# 2. Clone the repository
+# 1. Clone the repo
 git clone https://github.com/abiwhiark/Kali-x-Whiark-AI.git
 cd Kali-x-Whiark-AI
 
-# 3. Create and activate a Python virtual environment (PEP 668 compliant)
+# 2. Install system dependencies
+sudo apt update
+sudo apt install python3 python3-pip python3-venv git -y
+
+# 3. Create and activate virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
-# 4. Install backend dependencies
+# 4. Upgrade pip
+pip install --upgrade pip
+
+# 5. Install all Python dependencies
+pip install -r backend/requirements.txt
+
+# 6. Set up your .env file
+cp .env.example .env
+nano .env
+```
+
+Inside `nano`, edit your `.env` to look like this:
+```ini
+GEMINI_API_KEY=AIza...your_key_here...
+GEMINI_MODEL=gemini-2.5-flash
+MAX_AGENT_ITERATIONS=10
+MAX_TOOL_CALLS=15
+TOOL_EXECUTION_TIMEOUT=120
+ALLOWED_TARGETS=*
+```
+Save: `Ctrl+O` → `Enter` → `Ctrl+X`
+
+```bash
+# 7. Run Kali AI
+python3 cli.py
+```
+
+---
+
+## ⚠️ Common Errors & Fixes
+
+### Error: `ImportError: cannot import name 'genai' from 'google'`
+```bash
+# Fix: Install requirements inside the virtual environment
+source venv/bin/activate
 pip install --upgrade pip
 pip install -r backend/requirements.txt
-
-# (Note: If not using a venv and you see 'externally-managed-environment', run:
-#  python3 -m pip install -r backend/requirements.txt --break-system-packages)
-
-# 5. Configure environment variables
-cp .env.example .env
-# Edit .env to add your GEMINI_API_KEY (leave blank for Demo Mode)
-nano .env
-
-# 6. Install frontend dependencies (for Web Dashboard)
-cd frontend
-npm install
-cd ..
 ```
 
----
-
-### Method B: Windows (PowerShell)
-
-Open PowerShell and run:
-
-```powershell
-# 1. Clone the repository
-git clone https://github.com/abiwhiark/Kali-x-Whiark-AI.git
-cd Kali-x-Whiark-AI
-
-# 2. (Optional but recommended) Create virtual environment
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# 3. Install backend dependencies
-python -m pip install --upgrade pip
-pip install -r backend/requirements.txt
-
-# 4. Configure environment variables
-Copy-Item .env.example .env
-# Open .env and add your GEMINI_API_KEY
-notepad .env
-
-# 5. Install frontend dependencies (for Web Dashboard)
-cd frontend
-npm install
-cd ..
-```
-
----
-
-## 5. Running the Application
-
-### 🖥️ Option 1: Interactive Terminal CLI (Fastest)
-
-Ensure your virtual environment is active, then run:
-
+### Error: `ModuleNotFoundError: No module named 'dotenv'`
 ```bash
-# Linux / Kali Linux:
+pip install python-dotenv
+```
+
+### Error: `ModuleNotFoundError: No module named 'rich'`
+```bash
+pip install rich
+```
+
+### Error: `python3 cli.py` not working after install
+```bash
+# Make sure venv is ACTIVE (you must see (venv) in prompt)
+source venv/bin/activate
 python3 cli.py
-
-# Windows:
-python cli.py
 ```
 
-#### Inside the Interactive Shell:
-* **Run a scan:**
-  ```text
-  KaliAI ❯ nmap scan
-  ```
-  or
-  ```text
-  KaliAI ❯ scan localhost
-  ```
-* **Set a persistent scan target:**
-  ```text
-  KaliAI ❯ target 127.0.0.1
-  ```
-  *(To allow scanning any target in educational labs/CTFs, type: `target *`)*
-* **Ask cybersecurity & CTF questions (Conversational AI):**
-  ```text
-  KaliAI ❯ explain how directory traversal works and how to remediate it
-  ```
-* **View registered security tools:**
-  ```text
-  KaliAI ❯ tools
-  ```
-* **Exit:**
-  ```text
-  KaliAI ❯ quit
-  ```
-
-#### One-Shot CLI Execution (from your system shell):
+### Error: `.env` file not found
 ```bash
-# One-shot Nmap scan
-python3 cli.py -o "nmap scan" -t localhost
-
-# Scan a remote authorized target
-python3 cli.py -o "nmap scan" -t testphp.vulnweb.com
+cp .env.example .env
+nano .env   # add your GEMINI_API_KEY
 ```
 
 ---
 
-### 🌐 Option 2: Full Web Dashboard (React + FastAPI)
+## 🔑 Getting a Free Gemini API Key
 
-To launch the full interactive web application, open two terminal windows:
+1. Go to → **https://aistudio.google.com/app/apikey**
+2. Click **"Create API Key"**
+3. Copy the key (starts with `AIza...`)
+4. Paste it in your `.env` file as `GEMINI_API_KEY=AIza...`
 
-#### Terminal 1 — Start the Backend API:
+---
+
+## 🛠️ Install Kali Security Tools (for real scanning)
+
 ```bash
-# Linux / Kali Linux:
+sudo apt install -y \
+  nmap nikto gobuster dirb whatweb \
+  hydra john sqlmap wpscan masscan \
+  subfinder amass zaproxy \
+  xterm firefox-esr
+```
+
+> Without these, Kali AI still works but uses mock/simulated results.  
+> With them installed, **real live scanning** happens.
+
+---
+
+## 💻 Usage — CLI Commands
+
+Start the CLI:
+```bash
+source venv/bin/activate
+python3 cli.py
+```
+
+### 🎯 Set a Target & Scan
+```
+KaliAI ❯ target testphp.vulnweb.com        # authorize target
+KaliAI ❯ scan testphp.vulnweb.com          # full AI assessment
+KaliAI ❯ nmap scan on testphp.vulnweb.com  # nmap only
+KaliAI ❯ sqlmap on http://testphp.vulnweb.com/artists.php?artist=1
+KaliAI ❯ find subdomains of vulnweb.com
+KaliAI ❯ check ssl on testphp.vulnweb.com
+KaliAI ❯ wordpress scan on target.com
+```
+
+### 🖥️ Terminal Launcher (opens real Kali terminals)
+```
+KaliAI ❯ open terminal nmap -sV testphp.vulnweb.com
+KaliAI ❯ open tool nikto on testphp.vulnweb.com
+KaliAI ❯ open tool gobuster on http://testphp.vulnweb.com
+KaliAI ❯ open metasploit
+KaliAI ❯ terminals    # list open terminal sessions
+```
+
+### 🌐 Browser Launcher (opens real Firefox/Chromium)
+```
+KaliAI ❯ open browser https://testphp.vulnweb.com
+KaliAI ❯ browse zap https://testphp.vulnweb.com    # through ZAP proxy
+KaliAI ❯ open zap                                  # open ZAP GUI
+```
+
+### 🕷️ OWASP ZAP Auto-Scanner
+```
+KaliAI ❯ target testphp.vulnweb.com
+KaliAI ❯ zap scan http://testphp.vulnweb.com
+# → Starts ZAP daemon
+# → Opens Firefox (you watch it crawl live!)
+# → Spiders all pages
+# → Runs active attack scan
+# → Generates full report with CVSS/CWE
+```
+
+### 🔑 Password Cracking
+```
+KaliAI ❯ brute force ssh on 192.168.1.1
+KaliAI ❯ crack hashes /path/to/hashes.txt
+```
+
+### 📂 File Access
+```
+KaliAI ❯ read file /etc/passwd
+KaliAI ❯ ls /home/kali/
+```
+
+### 💬 Chat (like ChatGPT)
+```
+KaliAI ❯ what is SQL injection?
+KaliAI ❯ how do I exploit CVE-2021-44228?
+KaliAI ❯ explain OWASP Top 10
+KaliAI ❯ write a python port scanner
+```
+
+### ⚙️ Other Commands
+```
+KaliAI ❯ tools           # list AI-registered tools
+KaliAI ❯ kali tools      # list all 28 Kali tools + install status
+KaliAI ❯ help            # full command reference
+KaliAI ❯ target *        # HexStrike Mode: allow ALL targets
+KaliAI ❯ yes             # confirm authorization for current target
+KaliAI ❯ clear           # clear screen
+KaliAI ❯ quit            # exit
+```
+
+---
+
+## 🌐 Web Dashboard (Optional)
+
+For the full browser-based UI:
+
+**Terminal 1 — Backend:**
+```bash
 source venv/bin/activate
 python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
-
-# Windows:
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
-> Interactive API Swagger Documentation is available at: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-#### Terminal 2 — Start the Frontend Dashboard:
+**Terminal 2 — Frontend:**
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
-> Open your browser at **[http://localhost:5173](http://localhost:5173)** to view the live dashboard, AI activity stream, and findings matrix.
+
+Open: **http://localhost:5173**
 
 ---
 
-## 6. Running Tests
-
-Run the backend unit and integration test suite:
-```bash
-python -m pytest backend/tests -v
-```
-
-Run the frontend production build test:
-```bash
-cd frontend
-npm run build
-```
-
----
-
-## 7. Project Structure
+## 🗂️ Project Structure
 
 ```
-kali ai/
+Kali-x-Whiark-AI/
+├── cli.py                              # 🖥️  Main terminal CLI
+├── .env.example                        # 📋 Copy to .env and add API key
 ├── backend/
-│   ├── main.py                     # FastAPI application entrypoint
-│   ├── requirements.txt            # Python dependencies
-│   ├── api/
-│   │   └── routes.py               # REST endpoints & SSE chat stream
-│   ├── core/
-│   │   └── config.py               # Pydantic Settings & environment config
-│   ├── database/
-│   │   └── db.py                   # Async SQLite storage
-│   ├── models/
-│   │   └── schemas.py              # Pydantic schemas (Finding, Assessment, Tools)
+│   ├── requirements.txt                # 📦 Python dependencies
+│   ├── main.py                         # FastAPI app
 │   ├── services/
-│   │   ├── agent/
-│   │   │   └── orchestrator.py     # Core autonomous decision loop
-│   │   ├── gemini/
-│   │   │   └── client.py           # Gemini SDK & Demo client
-│   │   ├── tool_registry/
-│   │   │   └── registry.py         # Tool definitions & executors
+│   │   ├── agent/orchestrator.py       # 🧠 AI decision loop
+│   │   ├── kali_tool_runner.py         # ⚔️  28 Kali tools runner
+│   │   ├── terminal_launcher.py        # 🖥️  Open real terminals
+│   │   ├── browser_launcher.py         # 🌐 Open real browsers
+│   │   ├── zap_scanner.py              # 🕷️  OWASP ZAP automation
+│   │   ├── password_cracker.py         # 🔑 Hydra / John / Hashcat
+│   │   ├── file_access.py              # 📂 Secure file reader
 │   │   ├── security/
-│   │   │   └── validator.py        # Target & parameter security validation
+│   │   │   ├── validator.py            # 🛡️  Security validator
+│   │   │   └── consent_gate.py         # ✅ Authorization consent gate
+│   │   ├── tool_registry/registry.py   # 🗄️  Tool registry
+│   │   ├── gemini/client.py            # 🤖 Gemini AI client
 │   │   ├── analysis/
-│   │   │   ├── normalizer.py       # Finding extraction from tool outputs
-│   │   │   └── correlator.py       # Deduplication, correlation, & risk scoring
-│   │   └── reporting/
-│   │       └── generator.py        # Markdown report generation
-│   └── tests/                      # Pytest test suite (38 unit/integration tests)
-├── frontend/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.js
-│   └── src/
-│       ├── main.jsx
-│       ├── index.css
-│       ├── api.js                  # SSE stream parser & fetch helpers
-│       ├── App.jsx                 # Main dashboard UI
-│       └── components/
-│           └── Sidebar.jsx         # Plan, Activity, Findings, Tools, History tabs
-├── .env.example
-├── .gitignore
-├── pytest.ini
-└── README.md
+│   │   │   ├── normalizer.py           # Finding normalizer
+│   │   │   └── correlator.py           # Finding correlator
+│   │   └── reporting/generator.py      # 📊 Report generator
+│   └── tests/                          # ✅ 41 pytest tests
+└── frontend/                           # React dashboard
 ```
 
 ---
 
-## 8. Development Roadmap
+## 🔒 Security & Legal Notice
 
-- [x] **Stage 1 — Gemini Agent Foundation**: Tool registry, security validator, mock tools, autonomous decision loop, finding normalization, correlation, risk scoring, report generator, SQLite history, React dashboard with real-time SSE streaming.
-- [x] **Stage 2 — Initial Kali Tool Integration & HexStrike Terminal Model**: Real sub-process wrappers for **Nmap**, **WhatWeb**, and **Nuclei** with automatic binary detection and graceful fallback; unified Terminal REPL (`cli.py`) offering dual conversational chat (like Gemini / ChatGPT) and autonomous tool execution (like HexStrike AI).
-- [ ] **Stage 3 — Extended Web & TLS Tools**: Sub-process wrappers for Nikto and SSLyze.
-- [ ] **Stage 4 — Deep Assessment Tools**: OWASP ZAP API integration and rate-limited Gobuster.
-- [ ] **Stage 5 — Advanced Adaptive Engine**: Multi-vector attack surface graphs and MITRE ATT&CK mapping.
+This tool uses a **Consent Gate** model (same as Metasploit, Burp Suite, Nessus):
+
+- You can scan **any target** after typing `target <host>` or `yes`
+- By doing so you confirm you **own the system** or have **written authorization**
+- **Unauthorized scanning is illegal** — you are solely responsible
+- All consent events are logged with timestamps
+
+---
+
+## 🧰 All 28 Supported Kali Tools
+
+| Category | Tools |
+|----------|-------|
+| Recon / Ports | `nmap`, `masscan` |
+| Web Scanning | `nikto`, `nuclei`, `wpscan` |
+| Directory Brute | `gobuster`, `dirb` |
+| Fingerprinting | `whatweb`, `curl`, `wget` |
+| Injections | `sqlmap`, `xssstrike`, `commix` |
+| Password Cracking | `hydra`, `john`, `hashcat`, `aircrack-ng` |
+| DNS / Subdomains | `subfinder`, `amass`, `fierce`, `dnsrecon` |
+| SSL / TLS | `sslyze`, `testssl` |
+| Exploitation | `metasploit` |
+| SMB | `enum4linux`, `smbclient` |
+| Web App | `burpsuite` |
+
+---
+
+## 👨‍💻 Built by
+
+**Whiark × Kali AI Team**  
+Inspired by: HexStrike AI, Metasploit, Burp Suite  
+Powered by: Google Gemini API, Kali Linux, Python

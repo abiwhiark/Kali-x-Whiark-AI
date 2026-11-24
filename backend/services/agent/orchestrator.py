@@ -591,7 +591,11 @@ class AgentOrchestrator:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self._settings.GEMINI_API_KEY)
+        # Use v1beta — required for system_instruction support
+        client = genai.Client(
+            api_key=self._settings.GEMINI_API_KEY,
+            http_options={"api_version": "v1beta"},
+        )
         system_instruction = (
             "You are Kali AI, an expert autonomous cybersecurity assistant and conversational AI "
             "(inspired by HexStrike AI and Gemini CLI). "

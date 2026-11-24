@@ -62,7 +62,11 @@ class GeminiClient:
         self._model_name = settings.GEMINI_MODEL
 
         from google import genai
-        self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        # Use v1beta — required for system_instruction (developer instruction)
+        self._client = genai.Client(
+            api_key=settings.GEMINI_API_KEY,
+            http_options={"api_version": "v1beta"},
+        )
         self._genai = genai
 
         logger.info("GeminiClient initialized with model=%s", self._model_name)

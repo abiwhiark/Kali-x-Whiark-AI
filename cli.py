@@ -164,20 +164,28 @@ def get_active_provider(cfg: dict) -> str:
 
 def get_model_name(cfg: dict) -> str:
     p = get_active_provider(cfg)
-    return cfg.get(f"{p}_model", "gemini-2.0-flash")
+    return cfg.get(f"{p}_model", "gemini-3.8-flash")
 
 def initialize_from_env() -> dict:
-    """Build config from .env if no saved config exists."""
+    """Build config from .env — multi-provider aware."""
     cfg = load_config()
-    if not cfg:
-        # Auto-configure from .env Gemini key
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
-        if gemini_key and gemini_key not in ("", "your_key_here"):
-            cfg = {
-                "active": "gemini",
-                "gemini": gemini_key,
-                "gemini_model": os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
-            }
+    # Sync config dict with current .env / environment
+    active = os.environ.get("ACTIVE_PROVIDER", "")
+    if active:
+        cfg["active"] = active
+    elif not cfg.get("active"):
+        # auto-detect from which keys are present
+        if os.environ.get("GEMINI_API_KEY", "") not in ("", "your_key_here"):
+            cfg["active"] = "gemini"
+        elif os.environ.get("OPENAI_API_KEY", ""):
+            cfg["active"] = "openai"
+        elif os.environ.get("ANTHROPIC_API_KEY", ""):
+            cfg["active"] = "anthropic"
+        elif os.environ.get("ACTIVE_PROVIDER", "") == "ollama":
+            cfg["active"] = "ollama"
+    # Carry model info
+    if not cfg.get("gemini_model"):
+        cfg["gemini_model"] = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
     return cfg
 
 
@@ -442,6 +450,13 @@ def print_help() -> None:
             ("wordpress scan on <URL>",    "WPScan WordPress scanner"),
             ("/scan <target>",             "Force scan mode"),
             ("/chat <message>",            "Force chat mode"),
+            ("",                           ""),
+            ("— AI Provider —",            ""),
+            ("provider",                   "Setup wizard: Gemini/OpenAI/Anthropic/Ollama/Demo"),
+            ("setkey",                     "Change API key mid-session (no restart needed)"),
+            ("reset config",               "Wipe config and re-run setup wizard"),
+            ("/model <name>",              "Switch model on the fly"),
+            ("/models",                    "Show current provider and model"),
             ("",                           ""),
             ("— Conversational Chat —",    ""),
             ("what is sql injection?",     "Ask any cybersecurity question"),
@@ -832,9 +847,33 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
                 rprint("[dim]  No target set. Use: target <hostname or IP>[/dim]")
 
         elif lower == "provider":
-            cfg = setup_provider(cfg)
-            rprint(f"[green]  ✔  Switched to {get_active_provider(cfg)} / {get_model_name(cfg)}[/green]")
-            rprint("[dim]  Restart cli.py for the new provider to take full effect.[/dim]")
+            try:
+                from backend.setup_wizard import run_setup_wizard
+                run_setup_wizard(force=True)
+                load_dotenv(ROOT / ".env", override=True)
+                cfg = initialize_from_env()
+                # Re-create orchestrator with new provider
+                from backend.services.agent.orchestrator import AgentOrchestrator
+                from backend.core.config import reload_settings
+                reload_settings()
+                orchestrator = AgentOrchestrator()
+                rprint(f"[green]  ✔  Provider switched → {get_active_provider(cfg)}[/green]")
+            except Exception as _pe:
+                cfg = setup_provider(cfg)
+                rprint(f"[green]  ✔  Switched to {get_active_provider(cfg)} / {get_model_name(cfg)}[/green]")
+
+        elif lower in ("setkey", "set key", "apikey", "set api key", "changekey"):
+            try:
+                from backend.setup_wizard import change_api_key
+                change_api_key()
+                load_dotenv(ROOT / ".env", override=True)
+                from backend.core.config import reload_settings
+                reload_settings()
+                from backend.services.agent.orchestrator import AgentOrchestrator
+                orchestrator = AgentOrchestrator()
+                rprint("  [green]✔[/green]  API key updated. New session started.")
+            except Exception as _ke:
+                rprint(f"  [red]✘[/red]  Error updating key: {_ke}")
 
         elif lower.startswith("/model "):
             new_model = user_input[7:].strip()
@@ -849,13 +888,23 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
             rprint(f"[bold cyan]  Current model:[/bold cyan] {get_model_name(cfg)}")
             rprint("[dim]  Use [bold]/model <name>[/bold] to switch.[/dim]")
 
-        elif lower == "reset":
+        elif lower in ("reset", "reset config", "resetconfig", "reset setup"):
             if CONFIG_FILE.exists():
                 CONFIG_FILE.unlink()
             cfg = {}
             chat_history.clear()
-            rprint("[bold red]  Config and session history cleared. Reconfiguring...[/bold red]")
-            cfg = setup_provider(cfg)
+            rprint("[bold red]  Config and session history cleared. Re-running setup wizard...[/bold red]")
+            try:
+                from backend.setup_wizard import reset_config
+                reset_config()
+                load_dotenv(ROOT / ".env", override=True)
+                cfg = initialize_from_env()
+                from backend.core.config import reload_settings
+                reload_settings()
+                from backend.services.agent.orchestrator import AgentOrchestrator
+                orchestrator = AgentOrchestrator()
+            except Exception:
+                cfg = setup_provider(cfg)
 
         # ── Autonomous Scan Mode vs Conversational Chat Mode ──
         elif is_scan_request(user_input, has_target=bool(persistent_target)):
@@ -904,9 +953,18 @@ async def main() -> None:
     # Load / initialize config
     cfg = initialize_from_env()
 
-    # Force setup if requested or no config
-    if args.setup or not cfg:
-        cfg = setup_provider(cfg)
+    # Run setup wizard if no provider is configured, or --setup flag
+    if args.setup or not cfg.get("active"):
+        try:
+            from backend.setup_wizard import run_setup_wizard
+            wizard_env = run_setup_wizard(force=args.setup)
+            # Reload .env after wizard writes it
+            load_dotenv(ROOT / ".env", override=True)
+            cfg = initialize_from_env()
+        except Exception as _we:
+            rprint(f"[yellow]  ⚠  Setup wizard error: {_we}. Falling back to provider selector.[/yellow]")
+            if not cfg:
+                cfg = setup_provider(cfg)
 
     # Import backend
     try:

@@ -1,6 +1,7 @@
 """
 Kali AI - Configuration
 Loads settings from .env file using pydantic-settings.
+Supports Gemini, OpenAI, Anthropic, and Ollama providers.
 """
 
 from functools import lru_cache
@@ -8,7 +9,6 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field, computed_field
 
-# Resolve .env relative to the project root (two levels up from this file)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _ENV_FILE = _PROJECT_ROOT / ".env"
 
@@ -16,33 +16,51 @@ _ENV_FILE = _PROJECT_ROOT / ".env"
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    # --- Gemini API ---
-    GEMINI_API_KEY: str = Field(default="", description="Gemini API key. Leave empty for demo mode.")
-    GEMINI_MODEL: str = Field(default="gemini-2.5-flash", description="Gemini model to use.")
+    # ── Active Provider ──────────────────────────────────────────────
+    ACTIVE_PROVIDER: str = Field(default="", description="Active AI provider: gemini | openai | anthropic | ollama")
 
-    # --- Database ---
+    # ── Gemini ───────────────────────────────────────────────────────
+    GEMINI_API_KEY: str = Field(default="", description="Gemini API key.")
+    GEMINI_MODEL: str = Field(default="gemini-3.8-flash", description="Gemini model.")
+
+    # ── OpenAI ───────────────────────────────────────────────────────
+    OPENAI_API_KEY: str = Field(default="", description="OpenAI API key.")
+    OPENAI_MODEL: str = Field(default="gpt-4o-mini", description="OpenAI model.")
+
+    # ── Anthropic ────────────────────────────────────────────────────
+    ANTHROPIC_API_KEY: str = Field(default="", description="Anthropic API key.")
+    ANTHROPIC_MODEL: str = Field(default="claude-3-5-haiku-20241022", description="Anthropic model.")
+
+    # ── Ollama (local, no key needed) ────────────────────────────────
+    OLLAMA_HOST: str = Field(default="http://localhost:11434", description="Ollama server URL.")
+    OLLAMA_MODEL: str = Field(default="llama3", description="Ollama model name.")
+
+    # ── Database ─────────────────────────────────────────────────────
     DATABASE_PATH: str = Field(default="kali_ai.db", description="SQLite database file path.")
 
-    # --- Agent Limits ---
-    MAX_AGENT_ITERATIONS: int = Field(default=10, description="Maximum agent loop iterations per assessment.")
-    MAX_TOOL_CALLS: int = Field(default=15, description="Maximum tool calls per assessment.")
-    TOOL_EXECUTION_TIMEOUT: int = Field(default=120, description="Tool execution timeout in seconds.")
+    # ── Agent Limits ─────────────────────────────────────────────────
+    MAX_AGENT_ITERATIONS: int = Field(default=10)
+    MAX_TOOL_CALLS: int = Field(default=15)
+    TOOL_EXECUTION_TIMEOUT: int = Field(default=120)
 
-    # --- Security ---
+    # ── Security ─────────────────────────────────────────────────────
     ALLOWED_TARGETS: str = Field(
-        default="127.0.0.1,localhost,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
-        description="Comma-separated list of allowed target hosts/CIDRs.",
+        default="*",
+        description="Comma-separated allowed targets. Use * for all (HexStrike mode).",
     )
 
     @computed_field
     @property
     def demo_mode(self) -> bool:
-        """True when no API key is configured — the agent runs in demo mode."""
-        return not self.GEMINI_API_KEY or self.GEMINI_API_KEY == "your_key_here"
+        """True when no usable provider is configured."""
+        has_gemini = bool(self.GEMINI_API_KEY and self.GEMINI_API_KEY not in ("", "your_key_here"))
+        has_openai = bool(self.OPENAI_API_KEY)
+        has_anthropic = bool(self.ANTHROPIC_API_KEY)
+        has_ollama = self.ACTIVE_PROVIDER == "ollama"
+        return not (has_gemini or has_openai or has_anthropic or has_ollama)
 
     @property
     def allowed_targets_list(self) -> list[str]:
-        """Parse the comma-separated ALLOWED_TARGETS into a list."""
         return [t.strip() for t in self.ALLOWED_TARGETS.split(",") if t.strip()]
 
     model_config = {
@@ -54,5 +72,10 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return cached settings singleton."""
     return Settings()
+
+
+def reload_settings() -> Settings:
+    """Force reload settings (used after .env is updated mid-session)."""
+    get_settings.cache_clear()
+    return get_settings()

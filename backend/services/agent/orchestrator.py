@@ -25,7 +25,7 @@ from backend.models.schemas import (
     Assessment, AssessmentPlan, AssessmentStatus,
     AgentStep, AgentEvent, ToolCallRequest, Finding,
 )
-from backend.services.gemini.client import create_ai_client, AIResponse
+from backend.services.gemini.client import create_ai_client, AIResponse, GeminiClient, OllamaClient, OpenAIClient, AnthropicClient, DemoClient
 from backend.services.tool_registry.registry import ToolRegistry, create_registry
 from backend.services.security.validator import SecurityValidator
 from backend.services.security.consent_gate import get_consent_gate, ConsentRequiredError
@@ -578,78 +578,55 @@ class AgentOrchestrator:
 
     async def chat(self, message: str, history: list[dict[str, Any]] | None = None) -> str:
         """
-        Conversational chat interface like ChatGPT / Gemini / HexStrike AI.
-        Direct natural language dialog with memory, explanation, scripting, and CTF guidance.
+        Conversational chat — routes to the active provider
+        (Gemini, OpenAI, Anthropic, Ollama, or Demo).
         """
         if history is None:
             history = []
 
-        if self.is_demo_mode:
-            from backend.api.routes import _generate_demo_chat_reply
-            return _generate_demo_chat_reply(message)
-
-        from google import genai
-        from google.genai import types
-
-        # Use v1beta — required for system_instruction support
-        client = genai.Client(
-            api_key=self._settings.GEMINI_API_KEY,
-            http_options={"api_version": "v1beta"},
-        )
-        system_instruction = (
-            "You are Kali AI, an expert autonomous cybersecurity assistant and conversational AI "
-            "(inspired by HexStrike AI and Gemini CLI). "
-            "You assist security researchers, ethical hackers, and students with:\n"
-            "- Explaining security concepts, network protocols, cryptography, and vulnerabilities (OWASP Top 10, CVEs)\n"
-            "- CTF challenges, forensics, reverse engineering, and exploit methodology\n"
-            "- Security tooling usage (Nmap, WhatWeb, Nuclei, Nikto, SSLyze, ZAP, Gobuster, Metasploit, Burp Suite)\n"
-            "- Writing and reviewing Python, Bash, Go, and PowerShell security scripts\n"
-            "- Remediation, hardening, and defensive recommendations\n\n"
-            "Format responses using clean Markdown with code blocks, bullet points, and concise explanations. "
-            "Be direct, helpful, and technically accurate. "
-            "If the user wants to execute an actual security scan on a live target, inform them they can run commands like "
-            "'scan <target>', 'nmap scan', or use 'target <host>'."
+        SYSTEM = (
+            "You are Kali AI — Whiark × Kali AI — an expert autonomous cybersecurity assistant. "
+            "You help ethical hackers, penetration testers, bug bounty hunters, and students with:\n"
+            "- Cybersecurity concepts, OWASP Top 10, CVEs, cryptography, network protocols\n"
+            "- CTF challenges, forensics, reverse engineering, exploit methodology\n"
+            "- Kali Linux tools: Nmap, Nikto, Gobuster, SQLMap, Hydra, John, Metasploit, ZAP, Burp\n"
+            "- Writing Python, Bash, Go, PowerShell security scripts\n"
+            "- Remediation, hardening, and defensive security\n"
+            "Format responses in clean Markdown with code blocks and concise explanations."
         )
 
-        contents = []
+        # Build message list for the provider
+        messages: list[dict[str, Any]] = []
         for h in history[-20:]:
             role = h.get("role", "user")
-            content_text = h.get("content", "")
-            if not content_text:
-                continue
-            gemini_role = "user" if role == "user" else "model"
-            contents.append(types.Content(role=gemini_role, parts=[types.Part.from_text(text=content_text)]))
-
-        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=message)]))
+            content = h.get("content", "")
+            if content and role in ("user", "assistant"):
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message})
 
         try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
-                    model=self._settings.GEMINI_MODEL,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.7,
-                    ),
-                ),
-                timeout=20.0,
-            )
-            return response.text or "No response generated."
-        except asyncio.TimeoutError:
-            from backend.api.routes import _generate_demo_chat_reply
-            return (
-                "⚠️ **Gemini API took longer than expected to respond.**\n\n"
-                + _generate_demo_chat_reply(message)
-            )
+            # Use Ollama simple_chat if provider is Ollama
+            if isinstance(self._ai_client, OllamaClient):
+                return await self._ai_client.simple_chat(message, history)
+
+            # Use provider's chat()
+            resp = await self._ai_client.chat(messages, [], system_prompt=SYSTEM)
+            return resp.text or "No response generated."
+
         except Exception as e:
-            err_str = str(e)
-            logger.warning("Error in orchestrator chat: %s", err_str)
-            from backend.api.routes import _generate_demo_chat_reply
-            if any(k in err_str for k in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE", "quota"]):
+            err = str(e)
+            logger.warning("Error in orchestrator chat: %s", err)
+            if any(k in err for k in ["RESOURCE_EXHAUSTED", "429", "quota"]):
                 return (
-                    "⚠️ **Gemini API rate limit reached (Free tier).**\n\n"
-                    "Here is an instant educational response in the meantime:\n\n"
-                    + _generate_demo_chat_reply(message)
+                    "⚠️ **API rate limit reached.**\n\n"
+                    "Options:\n"
+                    "- Wait a minute and try again\n"
+                    "- Type `provider` to switch to Ollama (no rate limits!)\n"
+                    "- Type `setkey` to enter a different API key"
                 )
-            return f"Error communicating with AI: {err_str}"
+            if "404" in err or "no longer available" in err:
+                return (
+                    "⚠️ **Model not found.** The model may be deprecated.\n\n"
+                    "Type `provider` to reconfigure your AI provider."
+                )
+            return f"⚠️ AI error: {err[:300]}"

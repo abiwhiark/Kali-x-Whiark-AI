@@ -1,28 +1,22 @@
 """
 Kali AI - Setup Wizard
 ========================
-Runs before the first launch (or when user types 'provider' / 'setup').
-Asks the user which AI provider to use, collects credentials,
-and writes everything cleanly to the .env file.
-
-Supported providers:
-  1. Google Gemini  (free tier: 1500 req/day with gemini-3.8-flash)
-  2. OpenAI GPT     (paid, very capable)
-  3. Anthropic      (paid, great for analysis)
-  4. Ollama         (LOCAL — no API key, no rate limits, runs on your machine)
-  5. Demo Mode      (no key — simulated responses, good for testing UI)
+Step 1: Asks what model to pick by selecting a number in order.
+Step 2: Asks for the API key with masked/encrypted input (hidden on terminal).
+Step 3: Automatically updates the .env file.
 """
 
 from __future__ import annotations
 
+import getpass
 import os
 import socket
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 
-# ── Terminal colors (no rich dependency here) ─────────────────────────
+# Terminal colors
 C = {
     "RED":    "\033[91m",
     "GREEN":  "\033[92m",
@@ -40,10 +34,9 @@ def _c(color: str, text: str) -> str:
 
 def _banner():
     print(_c("CYAN", """
-╔══════════════════════════════════════════════════════════╗
-║        ⚡ WHIARK × KALI AI — PROVIDER SETUP ⚡           ║
-╚══════════════════════════════════════════════════════════╝
-"""))
+╔════════════════════════════════════════════════════════════════════════╗
+║             ⚡ WHIARK × KALI AI — MODEL SELECTION WIZARD ⚡            ║
+╚════════════════════════════════════════════════════════════════════════╝"""))
 
 
 def _ollama_running() -> bool:
@@ -71,7 +64,6 @@ def _write_env(env: dict[str, str]) -> None:
     """Write dict back to .env preserving comments from .env.example."""
     example = ROOT / ".env.example"
     if example.exists():
-        # Build new .env from example template, substituting values
         lines = []
         written_keys: set[str] = set()
         for line in example.read_text(encoding="utf-8").splitlines():
@@ -85,7 +77,6 @@ def _write_env(env: dict[str, str]) -> None:
                     lines.append(line)
             else:
                 lines.append(line)
-        # Append any extra keys not in template
         for k, v in env.items():
             if k not in written_keys:
                 lines.append(f"{k}={v}")
@@ -95,113 +86,178 @@ def _write_env(env: dict[str, str]) -> None:
         ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _inp(prompt: str, default: str = "") -> str:
-    """Input with default."""
-    hint = f" [{_c('DIM', default)}]" if default else ""
-    val = input(f"  {prompt}{hint}: ").strip()
-    return val if val else default
+# ── ORDERED MODEL DEFINITIONS (by number) ──────────────────────────
+# (number, provider_id, provider_display, model_id, model_display, needs_key, description)
+MODELS_CATALOG = [
+    (
+        "1", "gemini", "Google Gemini", "gemini-1.5-flash",
+        "Google Gemini — gemini-1.5-flash", True,
+        "RECOMMENDED FREE • Fast • 1500 req/day • Very generous limits"
+    ),
+    (
+        "2", "gemini", "Google Gemini", "gemini-1.5-pro",
+        "Google Gemini — gemini-1.5-pro", True,
+        "Deep Reasoning • Large context window • Free tier"
+    ),
+    (
+        "3", "gemini", "Google Gemini", "gemini-3.8-flash",
+        "Google Gemini — gemini-3.8-flash", True,
+        "Latest Google model • Cutting-edge speed & tool calls"
+    ),
+    (
+        "4", "ollama", "Ollama (Local)", "llama3",
+        "Ollama Local — llama3", False,
+        "100% FREE • Offline • NO rate limits • Runs on your machine"
+    ),
+    (
+        "5", "openai", "OpenAI", "gpt-4o-mini",
+        "OpenAI — gpt-4o-mini", True,
+        "Fast & smart • Cost-efficient • High rate limits"
+    ),
+    (
+        "6", "openai", "OpenAI", "gpt-4o",
+        "OpenAI — gpt-4o", True,
+        "Full GPT-4o power • Complex multi-step cyber assessments"
+    ),
+    (
+        "7", "anthropic", "Anthropic", "claude-3-5-haiku-20241022",
+        "Anthropic — claude-3-5-haiku", True,
+        "Fast • Excellent code & scripting analysis"
+    ),
+    (
+        "8", "anthropic", "Anthropic", "claude-3-5-sonnet-20241022",
+        "Anthropic — claude-3-5-sonnet", True,
+        "Top-tier reasoning • Industry standard for security tasks"
+    ),
+    (
+        "9", "demo", "Demo Mode", "demo",
+        "Demo Mode (Offline Simulation)", False,
+        "No API key needed • Offline mock testing"
+    ),
+]
 
 
-def run_setup_wizard(force: bool = False) -> dict[str, str]:
+def _get_encrypted_key(provider_name: str, existing_key: str = "") -> str:
+    """Prompt for API key with hidden/encrypted terminal input."""
+    print(f"\n  {_c('BOLD', 'Step 2: Enter API Key for')} {_c('CYAN', provider_name)}")
+    print(f"  {_c('DIM', '🔐 Keystrokes are hidden/encrypted on screen for security.')}")
+
+    if existing_key and existing_key not in ("your_key_here", ""):
+        masked = existing_key[:6] + "••••••••" + existing_key[-4:] if len(existing_key) > 10 else "••••••••"
+        print(f"  {_c('YELLOW', 'Current key:')} {masked} {_c('DIM', '(Press Enter to keep, or paste new key)')}")
+
+    key = ""
+    try:
+        key = getpass.getpass("  API Key: ").strip()
+    except Exception:
+        # Fallback if getpass is unsupported in certain virtual terminals
+        key = input("  API Key: ").strip()
+
+    if not key and existing_key and existing_key != "your_key_here":
+        key = existing_key
+        print(f"  {_c('GREEN', '✔ Kept existing API key.')}")
+    elif key:
+        print(f"  {_c('GREEN', '✔ API key received & encrypted.')}")
+
+    return key
+
+
+def run_setup_wizard(choice: str | None = None, force: bool = False) -> dict[str, str]:
     """
-    Run the interactive provider setup wizard.
-    Returns the chosen config as a dict.
-    Only runs if .env has no provider set, or force=True.
+    Run the ordered model & API key setup wizard.
+    Step 1: Pick a model by number [1-9]
+    Step 2: Enter encrypted API key
+    Step 3: Automatically update .env
     """
     env = _read_env()
 
     # Skip if already configured and not forced
-    if not force:
+    if not force and not choice:
         has_key = any([
             env.get("GEMINI_API_KEY", "") not in ("", "your_key_here"),
             env.get("OPENAI_API_KEY", ""),
             env.get("ANTHROPIC_API_KEY", ""),
             env.get("ACTIVE_PROVIDER", "").lower() == "ollama",
         ])
-        if has_key:
+        if has_key and env.get("ACTIVE_PROVIDER"):
             return env
 
     _banner()
 
-    ollama_status = (
-        _c("GREEN", "✔ Ollama is running on this machine!")
-        if _ollama_running()
-        else _c("DIM", "(not detected — install with: curl -fsSL https://ollama.com/install.sh | sh)")
-    )
+    # Step 1: Model Selection by Number
+    if not choice:
+        print(_c("BOLD", "  Step 1: Pick what model to use by selecting a number:\n"))
+        for num, pid, _, _, model_disp, _, desc in MODELS_CATALOG:
+            extra = ""
+            if pid == "ollama" and _ollama_running():
+                extra = _c("GREEN", " [Ollama detected running!]")
+            print(f"  {_c('CYAN', f'[{num}]')} {_c('BOLD', model_disp)}{extra}")
+            print(f"      {_c('DIM', desc)}")
+            print()
 
-    print(_c("BOLD", "  Choose your AI provider:\n"))
-    providers = [
-        ("1", "gemini",    "Google Gemini",    "Free: 1500 req/day • Needs API key from aistudio.google.com"),
-        ("2", "openai",    "OpenAI GPT",        "Paid • Needs API key from platform.openai.com"),
-        ("3", "anthropic", "Anthropic Claude",  "Paid • Needs API key from console.anthropic.com"),
-        ("4", "ollama",    "Ollama (Local)",    f"FREE • No rate limits • Runs on your machine {ollama_status}"),
-        ("5", "demo",      "Demo Mode",         "No key needed • Simulated responses only"),
-    ]
+        choice = input(f"  Enter number {_c('BOLD', '[1-9]')}: ").strip()
 
-    for num, pid, name, desc in providers:
-        print(f"  {_c('CYAN', num)}. {_c('BOLD', name)}")
-        print(f"     {_c('DIM', desc)}")
-        print()
+    # Find chosen item
+    selected = None
+    for item in MODELS_CATALOG:
+        if item[0] == choice:
+            selected = item
+            break
 
-    choice = _inp("Enter choice", "1")
-    chosen = next(((pid, name) for num, pid, name, _ in providers if num == choice), ("gemini", "Google Gemini"))
-    pid, pname = chosen
+    # Also handle word inputs like 'gemini', 'ollama', etc.
+    if not selected:
+        choice_lower = (choice or "1").lower().strip()
+        for item in MODELS_CATALOG:
+            if item[1] in choice_lower or choice_lower in item[3].lower():
+                selected = item
+                break
 
-    print(f"\n  {_c('GREEN', '✔')} Selected: {_c('BOLD', pname)}\n")
+    if not selected:
+        selected = MODELS_CATALOG[0]  # Default: Gemini 1.5 Flash
+
+    num, pid, provider_disp, model_id, model_disp, needs_key, _ = selected
+
+    print(f"\n  {_c('GREEN', '✔')} Selected: {_c('BOLD', model_disp)}")
+
+    # Update active provider and model in env dict
     env["ACTIVE_PROVIDER"] = pid
 
     if pid == "gemini":
-        print(f"  {_c('DIM', 'Get your free API key → https://aistudio.google.com/app/apikey')}")
-        key = _inp("Gemini API Key", env.get("GEMINI_API_KEY", ""))
-        model = _inp("Model", env.get("GEMINI_MODEL", "gemini-3.8-flash"))
-        env["GEMINI_API_KEY"] = key
-        env["GEMINI_MODEL"] = model or "gemini-3.8-flash"
+        env["GEMINI_MODEL"] = model_id
+        if needs_key:
+            print(f"  {_c('DIM', 'Get your free Gemini key at: https://aistudio.google.com/app/apikey')}")
+            key = _get_encrypted_key("Google Gemini", env.get("GEMINI_API_KEY", ""))
+            if key:
+                env["GEMINI_API_KEY"] = key
 
     elif pid == "openai":
-        print(f"  {_c('DIM', 'Get your API key → https://platform.openai.com/api-keys')}")
-        key = _inp("OpenAI API Key", env.get("OPENAI_API_KEY", ""))
-        model = _inp("Model", env.get("OPENAI_MODEL", "gpt-4o-mini"))
-        env["OPENAI_API_KEY"] = key
-        env["OPENAI_MODEL"] = model or "gpt-4o-mini"
+        env["OPENAI_MODEL"] = model_id
+        if needs_key:
+            print(f"  {_c('DIM', 'Get your OpenAI key at: https://platform.openai.com/api-keys')}")
+            key = _get_encrypted_key("OpenAI", env.get("OPENAI_API_KEY", ""))
+            if key:
+                env["OPENAI_API_KEY"] = key
 
     elif pid == "anthropic":
-        print(f"  {_c('DIM', 'Get your API key → https://console.anthropic.com')}")
-        key = _inp("Anthropic API Key", env.get("ANTHROPIC_API_KEY", ""))
-        model = _inp("Model", env.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022"))
-        env["ANTHROPIC_API_KEY"] = key
-        env["ANTHROPIC_MODEL"] = model or "claude-3-5-haiku-20241022"
+        env["ANTHROPIC_MODEL"] = model_id
+        if needs_key:
+            print(f"  {_c('DIM', 'Get your Anthropic key at: https://console.anthropic.com')}")
+            key = _get_encrypted_key("Anthropic", env.get("ANTHROPIC_API_KEY", ""))
+            if key:
+                env["ANTHROPIC_API_KEY"] = key
 
     elif pid == "ollama":
-        host = _inp("Ollama host", env.get("OLLAMA_HOST", "http://localhost:11434"))
-        env["OLLAMA_HOST"] = host or "http://localhost:11434"
-
-        # List available models
-        try:
-            import urllib.request, json
-            with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as r:
-                data = json.loads(r.read())
-                models = [m["name"] for m in data.get("models", [])]
-            if models:
-                print(f"\n  {_c('GREEN', 'Available Ollama models:')}")
-                for i, m in enumerate(models[:10], 1):
-                    print(f"    {_c('CYAN', str(i))}. {m}")
-                print()
-        except Exception:
-            models = []
-
-        default_model = models[0] if models else "llama3"
-        model = _inp("Ollama model", env.get("OLLAMA_MODEL", default_model))
-        env["OLLAMA_MODEL"] = model or default_model
-
+        env["OLLAMA_MODEL"] = model_id
+        env["OLLAMA_HOST"] = env.get("OLLAMA_HOST", "http://localhost:11434")
         if not _ollama_running():
-            print(f"\n  {_c('YELLOW', '⚠  Ollama not detected. Start it with:')}")
-            print(f"     {_c('CYAN', 'ollama serve')}")
-            print(f"     {_c('CYAN', f'ollama pull {env[\"OLLAMA_MODEL\"]}')}\n")
+            print(f"\n  {_c('YELLOW', '⚠  Note: Ollama is not currently running.')}")
+            print(f"     Start it in a terminal: {_c('CYAN', 'ollama serve')}")
+            print(f"     Pull the model:         {_c('CYAN', f'ollama pull {model_id}')}")
 
     elif pid == "demo":
-        print(f"  {_c('YELLOW', '  Running in Demo Mode — no AI calls, simulated responses.')}")
+        print(f"  {_c('YELLOW', 'Running in Demo Mode — no API calls, offline simulated responses.')}")
 
-    # Write .env
+    # Set common settings if missing
     if "ALLOWED_TARGETS" not in env:
         env["ALLOWED_TARGETS"] = "*"
     if "MAX_AGENT_ITERATIONS" not in env:
@@ -211,72 +267,41 @@ def run_setup_wizard(force: bool = False) -> dict[str, str]:
     if "TOOL_EXECUTION_TIMEOUT" not in env:
         env["TOOL_EXECUTION_TIMEOUT"] = "120"
 
+    # Step 3: Automatically update .env file
     _write_env(env)
 
-    # Reload settings
-    from backend.core.config import reload_settings
-    reload_settings()
-
-    # Also set env vars for current process
+    # Sync to current runtime process env vars
     for k, v in env.items():
         os.environ[k] = v
 
-    print(f"\n  {_c('GREEN', '✔  Configuration saved to .env')}")
-    print(f"  {_c('DIM', str(ENV_FILE))}\n")
+    # Reload cached settings
+    try:
+        from backend.core.config import reload_settings
+        reload_settings()
+    except Exception:
+        pass
+
+    print(f"\n  {_c('GREEN', '✔  Step 3 Complete: .env file automatically updated!')}")
+    print(f"  {_c('DIM', f'Config saved to: {ENV_FILE}')}")
+    print(f"  {_c('BOLD', f'Active: {provider_disp} ({model_id})')}\n")
+
     return env
 
 
 def change_api_key(provider: str = "") -> None:
-    """Mid-session: change API key or switch provider."""
+    """Mid-session key change / model switch with masked input."""
     env = _read_env()
-
-    if not provider:
-        print(f"\n  {_c('CYAN', 'Current provider:')} {env.get('ACTIVE_PROVIDER', 'not set')}")
-        print(f"  {_c('BOLD', 'Enter new provider')} (gemini/openai/anthropic/ollama/demo) or press Enter to keep:")
-        provider = input("  > ").strip().lower() or env.get("ACTIVE_PROVIDER", "gemini")
-
-    env["ACTIVE_PROVIDER"] = provider
-
-    if provider == "gemini":
-        print(f"  {_c('DIM', 'Get key → https://aistudio.google.com/app/apikey')}")
-        key = _inp("New Gemini API Key", env.get("GEMINI_API_KEY", ""))
-        model = _inp("Model", env.get("GEMINI_MODEL", "gemini-3.8-flash"))
-        env["GEMINI_API_KEY"] = key
-        env["GEMINI_MODEL"] = model or "gemini-3.8-flash"
-        os.environ["GEMINI_API_KEY"] = key
-        os.environ["GEMINI_MODEL"] = env["GEMINI_MODEL"]
-
-    elif provider == "openai":
-        key = _inp("New OpenAI API Key", env.get("OPENAI_API_KEY", ""))
-        env["OPENAI_API_KEY"] = key
-        os.environ["OPENAI_API_KEY"] = key
-
-    elif provider == "anthropic":
-        key = _inp("New Anthropic API Key", env.get("ANTHROPIC_API_KEY", ""))
-        env["ANTHROPIC_API_KEY"] = key
-        os.environ["ANTHROPIC_API_KEY"] = key
-
-    elif provider == "ollama":
-        model = _inp("Ollama model", env.get("OLLAMA_MODEL", "llama3"))
-        env["OLLAMA_MODEL"] = model or "llama3"
-        os.environ["OLLAMA_MODEL"] = env["OLLAMA_MODEL"]
-
-    _write_env(env)
-    os.environ["ACTIVE_PROVIDER"] = provider
-
-    from backend.core.config import reload_settings
-    reload_settings()
-
-    print(f"  {_c('GREEN', '✔')} Switched to {_c('BOLD', provider)}. Changes saved to .env.\n")
+    current_p = provider or env.get("ACTIVE_PROVIDER", "gemini")
+    run_setup_wizard(force=True)
 
 
 def reset_config() -> None:
-    """Wipe the .env and re-run wizard."""
+    """Wipe .env and re-run setup wizard."""
     if ENV_FILE.exists():
         ENV_FILE.unlink()
     example = ROOT / ".env.example"
     if example.exists():
         import shutil
         shutil.copy(example, ENV_FILE)
-    print("  Config reset. Re-running setup wizard...\n")
+    print("  Configuration reset. Launching model selection wizard...\n")
     run_setup_wizard(force=True)

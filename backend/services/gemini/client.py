@@ -61,13 +61,13 @@ class AIResponse:
 
 # ── GEMINI CLIENT ─────────────────────────────────────────────────────
 
-# Working Gemini models (in preference order, most capable first)
+# Working Gemini models (in preference order, most reliable & high-quota first)
 GEMINI_MODELS_FALLBACK = [
+    "gemini-1.5-flash",
     "gemini-3.8-flash",
+    "gemini-1.5-pro",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
 ]
 
 
@@ -77,7 +77,7 @@ class GeminiClient:
     def __init__(self, api_key: str = "", model: str = "") -> None:
         settings = get_settings()
         self._api_key = api_key or settings.GEMINI_API_KEY
-        self._model_name = model or settings.GEMINI_MODEL or "gemini-3.8-flash"
+        self._model_name = model or settings.GEMINI_MODEL or "gemini-1.5-flash"
 
         from google import genai
         # v1beta required for system_instruction support
@@ -149,8 +149,10 @@ class GeminiClient:
             temperature=0.2,
         )
 
-        # Try current model, then fallback chain
-        for attempt_model in [self._model_name] + GEMINI_MODELS_FALLBACK:
+        # Build candidate models starting with preferred model, then remaining fallbacks
+        candidate_models = [self._model_name] + [m for m in GEMINI_MODELS_FALLBACK if m != self._model_name]
+
+        for attempt_model in candidate_models:
             try:
                 response = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -170,19 +172,20 @@ class GeminiClient:
             except Exception as e:
                 err = str(e)
                 if "404" in err or "no longer available" in err or "NOT_FOUND" in err:
-                    logger.warning("Model %s not found, trying next...", attempt_model)
+                    logger.warning("Model %s not found (404), trying next model...", attempt_model)
                     continue
                 elif "RESOURCE_EXHAUSTED" in err or "429" in err:
-                    # Rate limit — fall back to demo
-                    logger.warning("Rate limited on %s, falling back to demo", attempt_model)
-                    return await DemoClient().chat(messages, tools, system_prompt)
+                    logger.warning("Rate limit on %s (429), trying next fallback model...", attempt_model)
+                    continue  # Try next model in chain instead of immediately failing
                 elif "INVALID_ARGUMENT" in err and "v1beta" not in err:
-                    logger.error("Gemini API error: %s", err)
-                    return AIResponse(text=f"⚠️ Gemini error: {err[:200]}", provider="gemini")
+                    logger.error("Gemini API error on %s: %s", attempt_model, err)
+                    continue
                 else:
-                    raise
+                    logger.warning("Gemini error on %s: %s, trying next...", attempt_model, err[:150])
+                    continue
         else:
             # All models exhausted
+            logger.warning("All Gemini models exhausted or rate-limited. Falling back to Demo.")
             return await DemoClient().chat(messages, tools, system_prompt)
 
         if not response.candidates:

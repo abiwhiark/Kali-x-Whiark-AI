@@ -88,6 +88,7 @@ def print_banner(demo_mode: bool, provider: str = "gemini") -> None:
         console.print(mode_badge)
         console.print("[dim]  Chat naturally like ChatGPT/Gemini, or give scan instructions directly.[/dim]")
         console.print("[dim]  Type [bold]help[/bold] for commands, [bold]tools[/bold] to view tool registry, [bold]quit[/bold] to exit.[/dim]")
+        console.print("[dim]  Type [bold cyan]1-9[/bold cyan] or [bold cyan]provider[/bold cyan] to select model & enter API key anytime.[/dim]")
         console.rule(style="dim")
     else:
         print(BANNER)
@@ -96,6 +97,7 @@ def print_banner(demo_mode: bool, provider: str = "gemini") -> None:
         mode = "DEMO MODE" if demo_mode else f"LIVE ({provider.upper()})"
         print(f"  Mode: [{mode}] — HexStrike AI Model")
         print("  Chat naturally or give scan commands directly.")
+        print("  Type '1'-'9' or 'provider' to select model & enter API key.")
         print("  Type 'help' for commands, 'quit' to exit.")
         print("─" * 75)
     print()
@@ -846,21 +848,27 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
             else:
                 rprint("[dim]  No target set. Use: target <hostname or IP>[/dim]")
 
-        elif lower == "provider":
+        # ── Model Selection [1-9], Provider, or Setup ────────────────
+        elif lower in ("1", "2", "3", "4", "5", "6", "7", "8", "9",
+                       "provider", "setup", "models", "select model", "model",
+                       "google gemini", "gemini", "ollama", "openai", "anthropic", "demo"):
             try:
                 from backend.setup_wizard import run_setup_wizard
-                run_setup_wizard(force=True)
+                chosen_num = lower if lower in ("1", "2", "3", "4", "5", "6", "7", "8", "9") else None
+                run_setup_wizard(choice=chosen_num, force=True)
                 load_dotenv(ROOT / ".env", override=True)
                 cfg = initialize_from_env()
-                # Re-create orchestrator with new provider
+                # Re-create orchestrator with new provider & model
                 from backend.services.agent.orchestrator import AgentOrchestrator
                 from backend.core.config import reload_settings
                 reload_settings()
                 orchestrator = AgentOrchestrator()
-                rprint(f"[green]  ✔  Provider switched → {get_active_provider(cfg)}[/green]")
+                provider_disp = get_active_provider(cfg).upper()
+                model_disp = get_model_name(cfg)
+                rprint(f"\n  [bold green]✔ Active AI:[/bold green] [cyan]{provider_disp}[/cyan] ([yellow]{model_disp}[/yellow])")
+                rprint("  [dim]Type your message or scan command now.[/dim]\n")
             except Exception as _pe:
-                cfg = setup_provider(cfg)
-                rprint(f"[green]  ✔  Switched to {get_active_provider(cfg)} / {get_model_name(cfg)}[/green]")
+                rprint(f"  [red]Setup error:[/red] {_pe}")
 
         elif lower in ("setkey", "set key", "apikey", "set api key", "changekey"):
             try:
@@ -953,11 +961,12 @@ async def main() -> None:
     # Load / initialize config
     cfg = initialize_from_env()
 
-    # Run setup wizard if no provider is configured, or --setup flag
-    if args.setup or not cfg.get("active"):
+    # Run setup wizard if no active provider is set or --setup flag
+    env_active = os.environ.get("ACTIVE_PROVIDER", "")
+    if args.setup or not env_active or not cfg.get("active"):
         try:
             from backend.setup_wizard import run_setup_wizard
-            wizard_env = run_setup_wizard(force=args.setup)
+            wizard_env = run_setup_wizard(force=bool(args.setup or not env_active))
             # Reload .env after wizard writes it
             load_dotenv(ROOT / ".env", override=True)
             cfg = initialize_from_env()

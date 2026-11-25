@@ -731,9 +731,6 @@ class AgentOrchestrator:
         messages.append({"role": "user", "content": message})
 
         try:
-            if isinstance(self._ai_client, OllamaClient):
-                return await self._ai_client.simple_chat(message, history)
-
             resp = await self._ai_client.chat(messages, [], system_prompt=SYSTEM)
             return resp.text or "No response generated."
 

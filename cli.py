@@ -119,7 +119,7 @@ PROVIDERS = {
     "1": ("gemini",    "Google Gemini",   "GEMINI_API_KEY",  "gemini-2.5-flash"),
     "2": ("anthropic", "Anthropic Claude","ANTHROPIC_API_KEY","claude-3-5-sonnet-20241022"),
     "3": ("openai",    "OpenAI GPT",      "OPENAI_API_KEY",  "gpt-4o-mini"),
-    "4": ("ollama",    "Local Ollama",    None,              "llama3"),
+    "4": ("ollama",    "Local Ollama",    None,              "kali-cyber"),
 }
 
 def setup_provider(cfg: dict) -> dict:
@@ -188,6 +188,8 @@ def initialize_from_env() -> dict:
     # Carry model info
     if not cfg.get("gemini_model"):
         cfg["gemini_model"] = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    if not cfg.get("ollama_model"):
+        cfg["ollama_model"] = os.environ.get("OLLAMA_MODEL", "kali-cyber")
     return cfg
 
 
@@ -455,8 +457,10 @@ def print_help() -> None:
             ("",                           ""),
             ("— AI Configuration —",       ""),
             ("setkey",                     "Change/enter Gemini API key (hidden/encrypted)"),
-            ("reset",                      "Reset config and re-enter API key"),
-            ("/model <name>",              "Switch Gemini model on the fly"),
+            ("provider",                   "Switch between Gemini and Local Ollama"),
+            ("/ollama [model]",            "Switch to Local Ollama (default: kali-cyber)"),
+            ("reset",                      "Reset config and re-run setup wizard"),
+            ("/model <name>",              "Switch active model live"),
             ("",                           ""),
             ("— Conversational Chat —",    ""),
             ("what is sql injection?",     "Ask any cybersecurity question"),
@@ -865,13 +869,50 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
             except Exception as _pe:
                 rprint(f"  [red]Setup error:[/red] {_pe}")
 
+        elif lower == "/ollama" or lower.startswith("/ollama "):
+            ollama_model = user_input[7:].strip() if lower.startswith("/ollama ") else os.environ.get("OLLAMA_MODEL", "kali-cyber")
+            ollama_model = ollama_model or "kali-cyber"
+            try:
+                from backend.setup_wizard import _read_env, _write_env
+                from backend.services.agent.orchestrator import AgentOrchestrator
+                from backend.core.config import reload_settings
+                env = _read_env()
+                env["ACTIVE_PROVIDER"] = "ollama"
+                env["OLLAMA_MODEL"] = ollama_model
+                env.setdefault("OLLAMA_HOST", "http://localhost:11434")
+                _write_env(env)
+                os.environ["ACTIVE_PROVIDER"] = "ollama"
+                os.environ["OLLAMA_MODEL"] = ollama_model
+                cfg["active"] = "ollama"
+                cfg["ollama_model"] = ollama_model
+                save_config(cfg)
+                reload_settings()
+                orchestrator = AgentOrchestrator()
+                rprint(f"\n  [bold green]✔ Switched to Local Ollama:[/bold green] [yellow]{ollama_model}[/yellow]")
+                rprint("  [dim]Make sure Ollama is running: ollama serve[/dim]\n")
+            except Exception as _oe:
+                rprint(f"  [red]Ollama switch error:[/red] {_oe}")
+
         elif lower.startswith("/model "):
             new_model = user_input[7:].strip()
             p = get_active_provider(cfg)
             cfg[f"{p}_model"] = new_model
             save_config(cfg)
-            rprint(f"[green]  ✔  Model changed to: {new_model}[/green]")
-            rprint("[dim]  Restart cli.py for the model change to take effect.[/dim]")
+            try:
+                from backend.setup_wizard import _read_env, _write_env
+                from backend.services.agent.orchestrator import AgentOrchestrator
+                from backend.core.config import reload_settings
+                env_key = f"{p.upper()}_MODEL"
+                env = _read_env()
+                env[env_key] = new_model
+                _write_env(env)
+                os.environ[env_key] = new_model
+                reload_settings()
+                orchestrator = AgentOrchestrator()
+                rprint(f"[green]  ✔  Model changed live to: {new_model} ({p.upper()})[/green]")
+            except Exception:
+                rprint(f"[green]  ✔  Model changed to: {new_model}[/green]")
+                rprint("[dim]  Restart cli.py for the model change to take effect.[/dim]")
 
         elif lower == "/models":
             rprint(f"[bold cyan]  Current provider:[/bold cyan] {get_active_provider(cfg)}")

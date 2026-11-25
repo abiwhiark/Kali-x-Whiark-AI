@@ -77,48 +77,71 @@ def _write_env(env: dict[str, str]) -> None:
 
 def run_setup_wizard(force: bool = False, **kwargs) -> dict[str, str]:
     """
-    Super-simple setup wizard:
-    Prompts only for the Gemini API key (hidden/encrypted keystrokes).
-    Automatically saves to .env with the optimal free model (gemini-1.5-flash).
+    Streamlined setup wizard:
+    Supports Google Gemini (cloud) or Local Ollama (offline cybersecurity model).
+    Saves configuration to .env and reloads settings live.
     """
     env = _read_env()
 
     # Skip if already configured and not forced
+    existing_active = env.get("ACTIVE_PROVIDER", "")
     existing_key = env.get("GEMINI_API_KEY", "")
-    if not force and existing_key and existing_key != "your_key_here":
-        return env
+    if not force:
+        if existing_active == "ollama":
+            return env
+        if existing_key and existing_key != "your_key_here":
+            return env
 
     _banner()
-    print(f"\n  {_c('BOLD', 'Enter your Google Gemini API Key:')}")
-    print(f"  {_c('DIM', 'Get your free key at: https://aistudio.google.com/app/apikey')}")
-    print(f"  {_c('DIM', '🔐 Keystrokes are hidden/encrypted for security.')}")
-    print(f"  {_c('DIM', '(Or press Enter to start in offline Demo Mode)')}\n")
+    print(f"\n  {_c('BOLD', 'Choose AI Provider:')}")
+    print(f"    {_c('CYAN', '1')}. Google Gemini        {_c('DIM', '(Cloud — requires free API key)')}")
+    print(f"    {_c('CYAN', '2')}. Local Ollama         {_c('DIM', '(Offline on Kali — no rate limits)')}")
+    print(f"    {_c('DIM', '(Press Enter for Gemini)')}\n")
 
-    if existing_key and existing_key != "your_key_here":
-        masked = existing_key[:6] + "••••••••" + existing_key[-4:] if len(existing_key) > 10 else "••••••••"
-        print(f"  {_c('YELLOW', 'Current key:')} {masked} {_c('DIM', '(Press Enter to keep, or paste new key)')}")
+    choice = input("  Provider [1]: ").strip().lower() or "1"
 
-    key = ""
-    try:
-        key = getpass.getpass("  Gemini API Key: ").strip()
-    except Exception:
-        key = input("  Gemini API Key: ").strip()
+    if choice in ("2", "ollama", "local"):
+        default_ollama = env.get("OLLAMA_MODEL", "kali-cyber")
+        print(f"\n  {_c('DIM', 'Recommended models: kali-cyber, qwen2.5:7b, kali-cyber-pro, deephat')}")
+        ollama_model = input(f"  Ollama Model [{default_ollama}]: ").strip() or default_ollama
+        ollama_host = env.get("OLLAMA_HOST", "http://localhost:11434")
 
-    if not key and existing_key and existing_key != "your_key_here":
-        key = existing_key
-
-    if key:
-        env["ACTIVE_PROVIDER"] = "gemini"
-        env["GEMINI_API_KEY"] = key
-        env["GEMINI_MODEL"] = "gemini-1.5-flash"
-        print(f"\n  {_c('GREEN', '✔ API key saved & encrypted!')}")
-        print(f"  {_c('GREEN', '✔ Configured Google Gemini (gemini-1.5-flash — 1500 req/day free)')}")
+        env["ACTIVE_PROVIDER"] = "ollama"
+        env["OLLAMA_MODEL"] = ollama_model
+        env["OLLAMA_HOST"] = ollama_host
+        print(f"\n  {_c('GREEN', f'✔ Configured Local Ollama ({ollama_model} @ {ollama_host})!')}")
+        print(f"  {_c('DIM', 'Make sure Ollama is running: ollama serve')}")
     else:
-        env["ACTIVE_PROVIDER"] = "demo"
-        env["GEMINI_API_KEY"] = ""
-        env["GEMINI_MODEL"] = "gemini-1.5-flash"
-        print(f"\n  {_c('YELLOW', '⚠ No key entered — running in Demo Mode (simulated responses).')}")
-        print(f"  {_c('DIM', 'You can add your key anytime by typing: setkey')}")
+        print(f"\n  {_c('BOLD', 'Enter your Google Gemini API Key:')}")
+        print(f"  {_c('DIM', 'Get your free key at: https://aistudio.google.com/app/apikey')}")
+        print(f"  {_c('DIM', '🔐 Keystrokes are hidden/encrypted for security.')}")
+        print(f"  {_c('DIM', '(Or press Enter to start in offline Demo Mode)')}\n")
+
+        if existing_key and existing_key != "your_key_here":
+            masked = existing_key[:6] + "••••••••" + existing_key[-4:] if len(existing_key) > 10 else "••••••••"
+            print(f"  {_c('YELLOW', 'Current key:')} {masked} {_c('DIM', '(Press Enter to keep, or paste new key)')}")
+
+        key = ""
+        try:
+            key = getpass.getpass("  Gemini API Key: ").strip()
+        except Exception:
+            key = input("  Gemini API Key: ").strip()
+
+        if not key and existing_key and existing_key != "your_key_here":
+            key = existing_key
+
+        if key:
+            env["ACTIVE_PROVIDER"] = "gemini"
+            env["GEMINI_API_KEY"] = key
+            env["GEMINI_MODEL"] = "gemini-2.5-flash"
+            print(f"\n  {_c('GREEN', '✔ API key saved & encrypted!')}")
+            print(f"  {_c('GREEN', '✔ Configured Google Gemini (gemini-2.5-flash)')}")
+        else:
+            env["ACTIVE_PROVIDER"] = "demo"
+            env["GEMINI_API_KEY"] = ""
+            env["GEMINI_MODEL"] = "gemini-2.5-flash"
+            print(f"\n  {_c('YELLOW', '⚠ No key entered — running in Demo Mode (simulated responses).')}")
+            print(f"  {_c('DIM', 'You can configure Gemini or Ollama anytime by typing: provider')}")
 
     # Set common pentest limits
     if "ALLOWED_TARGETS" not in env:

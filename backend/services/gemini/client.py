@@ -210,12 +210,113 @@ class GeminiClient:
 # ── OLLAMA CLIENT (local, no rate limits) ────────────────────────────
 
 class OllamaClient:
-    """Local Ollama LLM client — no API key, no rate limits."""
+    """Local Ollama LLM client — supports native tool calling + JSON fallback for cyber models."""
 
-    def __init__(self, model: str = "llama3", host: str = "http://localhost:11434") -> None:
+    def __init__(self, model: str = "kali-cyber", host: str = "http://localhost:11434") -> None:
         self._model = model
-        self._host = host
+        self._host = host.rstrip("/")
+        self._supports_native_tools: bool | None = None
         logger.info("OllamaClient initialized — model=%s host=%s", model, host)
+
+    @staticmethod
+    def _extract_json_tool_call(text: str, valid_names: set[str]) -> dict[str, Any] | None:
+        """Extract a JSON tool call emitted in text when model lacks native tool_calls."""
+        import json
+        import re
+
+        if not text:
+            return None
+
+        # Check fenced JSON blocks first, then raw JSON objects containing tool_call/name
+        candidates: list[str] = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        candidates.extend(re.findall(r"(\{[^{}]*\"(?:tool_call|name)\"[^{}]*(?:\{[^{}]*\}[^{}]*)?\})", text, re.DOTALL))
+
+        for raw in candidates:
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            fc = data.get("tool_call") if isinstance(data.get("tool_call"), dict) else data
+            name = fc.get("name") or fc.get("tool") or fc.get("tool_id")
+            args = fc.get("args") or fc.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            if isinstance(name, str) and name in valid_names and isinstance(args, dict):
+                return {"name": name, "args": args}
+        return None
+
+    def _build_ollama_messages(
+        self,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+        use_native_tools: bool,
+        tools: list[ToolDefinition],
+    ) -> list[dict[str, Any]]:
+        import json
+
+        ollama_messages: list[dict[str, Any]] = []
+        effective_system = system_prompt or ""
+
+        if not use_native_tools and tools:
+            tool_specs = "\n".join(
+                f"- {t.id}: {t.description} (params: {json.dumps(t.input_schema.get('properties', {}))})"
+                for t in tools
+            )
+            effective_system = (
+                f"{effective_system}\n\n"
+                "TOOL EXECUTION INSTRUCTIONS:\n"
+                "To execute a security tool, reply ONLY with a JSON block in this exact format:\n"
+                "```json\n{\"tool_call\": {\"name\": \"<tool_id>\", \"arguments\": {\"target\": \"<target>\"}}}\n```\n"
+                f"Available tools:\n{tool_specs}\n"
+                "Only after all needed tools have returned results, write your final assessment report."
+            ).strip()
+
+        if effective_system:
+            ollama_messages.append({"role": "system", "content": effective_system})
+
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role in ("user", "assistant", "model"):
+                ollama_role = "assistant" if role in ("assistant", "model") else "user"
+                ollama_messages.append({"role": ollama_role, "content": str(content)})
+            elif role == "model_function_call":
+                fc_name = msg.get("name", "")
+                fc_args = msg.get("args", {})
+                if use_native_tools:
+                    ollama_messages.append({
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "type": "function",
+                            "function": {"name": fc_name, "arguments": fc_args},
+                        }],
+                    })
+                else:
+                    ollama_messages.append({
+                        "role": "assistant",
+                        "content": json.dumps({"tool_call": {"name": fc_name, "arguments": fc_args}}),
+                    })
+            elif role == "function_result":
+                fc_name = msg.get("name", "tool")
+                serialized = json.dumps(content, default=str)[:4000]
+                if use_native_tools:
+                    ollama_messages.append({
+                        "role": "tool",
+                        "content": serialized,
+                        "tool_name": fc_name,
+                    })
+                else:
+                    ollama_messages.append({
+                        "role": "user",
+                        "content": f"Tool result for `{fc_name}`:\n```json\n{serialized}\n```",
+                    })
+        return ollama_messages
 
     async def chat(
         self,
@@ -225,56 +326,125 @@ class OllamaClient:
     ) -> AIResponse:
         import asyncio
         import json
+        import urllib.error
         import urllib.request
 
-        # Build message list for Ollama
-        ollama_messages = []
-        if system_prompt:
-            ollama_messages.append({"role": "system", "content": system_prompt})
+        func_decls = _build_function_declarations(tools)
+        ollama_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": fd["name"],
+                    "description": fd["description"],
+                    "parameters": fd["parameters"],
+                },
+            }
+            for fd in func_decls
+        ]
+        valid_names = {t.id for t in tools}
 
-        for msg in messages:
-            role = msg["role"]
-            content = msg.get("content", "")
-            if role in ("user", "assistant"):
-                ollama_messages.append({"role": role, "content": content})
-            elif role == "function_result":
-                ollama_messages.append({
-                    "role": "user",
-                    "content": f"Tool result for {msg.get('name', 'tool')}: {json.dumps(msg.get('content', ''))}"
-                })
-
-        payload = json.dumps({
-            "model": self._model,
-            "messages": ollama_messages,
-            "stream": False,
-        }).encode()
-
-        def _call():
+        def _post(payload_dict: dict[str, Any]) -> dict[str, Any]:
+            payload = json.dumps(payload_dict).encode("utf-8")
             req = urllib.request.Request(
                 f"{self._host}/api/chat",
                 data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.loads(resp.read().decode())
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as he:
+                body = he.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"HTTP {he.code}: {body}") from he
+
+        use_native = bool(ollama_tools) and (self._supports_native_tools is not False)
+        ollama_messages = self._build_ollama_messages(messages, system_prompt, use_native, tools)
+
+        payload_dict: dict[str, Any] = {
+            "model": self._model,
+            "messages": ollama_messages,
+            "stream": False,
+        }
+        if use_native and ollama_tools:
+            payload_dict["tools"] = ollama_tools
 
         try:
-            result = await asyncio.wait_for(asyncio.to_thread(_call), timeout=120.0)
-            text = result.get("message", {}).get("content", "No response from Ollama.")
-            return AIResponse(text=text, provider=f"ollama/{self._model}")
+            try:
+                result = await asyncio.wait_for(asyncio.to_thread(_post, payload_dict), timeout=180.0)
+                if use_native and ollama_tools:
+                    self._supports_native_tools = True
+            except RuntimeError as rt_err:
+                err_lower = str(rt_err).lower()
+                if use_native and ("does not support tools" in err_lower or "tool" in err_lower and "400" in err_lower):
+                    logger.info("Model %s lacks native Ollama tool support; using JSON tool fallback.", self._model)
+                    self._supports_native_tools = False
+                    fallback_msgs = self._build_ollama_messages(messages, system_prompt, False, tools)
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(_post, {"model": self._model, "messages": fallback_msgs, "stream": False}),
+                        timeout=180.0,
+                    )
+                else:
+                    raise
+
+            msg_obj = result.get("message", {}) or {}
+            text = msg_obj.get("content", "") or ""
+            raw_tool_calls = msg_obj.get("tool_calls") or []
+
+            # 1. Native Ollama tool_calls
+            if raw_tool_calls and isinstance(raw_tool_calls, list):
+                first_call = raw_tool_calls[0].get("function", {}) if isinstance(raw_tool_calls[0], dict) else {}
+                fc_name = first_call.get("name", "")
+                fc_args = first_call.get("arguments", {})
+                if isinstance(fc_args, str):
+                    try:
+                        fc_args = json.loads(fc_args)
+                    except json.JSONDecodeError:
+                        fc_args = {}
+                if fc_name:
+                    return AIResponse(
+                        text=text,
+                        function_call={"name": fc_name, "args": fc_args if isinstance(fc_args, dict) else {}},
+                        finish_reason="function_call",
+                        provider=f"ollama/{self._model}",
+                    )
+
+            # 2. Fallback JSON tool-call extraction (for cyber fine-tuned models without native tools)
+            if valid_names:
+                parsed_fc = self._extract_json_tool_call(text, valid_names)
+                if parsed_fc:
+                    return AIResponse(
+                        text="",
+                        function_call=parsed_fc,
+                        finish_reason="function_call",
+                        provider=f"ollama/{self._model}",
+                    )
+
+            return AIResponse(
+                text=text or "No response from Ollama.",
+                provider=f"ollama/{self._model}",
+            )
+
         except Exception as e:
             err = str(e)
-            if "Connection refused" in err or "connection refused" in err.lower():
+            if "Connection refused" in err or "connection refused" in err.lower() or "10061" in err:
                 return AIResponse(
                     text=(
                         "❌ **Ollama is not running.**\n\n"
-                        "Start it with:\n```bash\nollama serve\n```\n"
-                        "Then pull a model:\n```bash\nollama pull llama3\n```"
+                        "Start it on Kali Linux with:\n```bash\nollama serve\n```\n"
+                        f"Then make sure your model is pulled:\n```bash\nollama pull {self._model}\n```"
                     ),
                     provider="ollama",
                 )
-            return AIResponse(text=f"Ollama error: {err[:200]}", provider="ollama")
+            if "not found" in err.lower() and "404" in err:
+                return AIResponse(
+                    text=(
+                        f"❌ **Ollama model `{self._model}` is not installed yet.**\n\n"
+                        f"Pull or create it first:\n```bash\nollama pull {self._model}\n```"
+                    ),
+                    provider="ollama",
+                )
+            return AIResponse(text=f"Ollama error: {err[:300]}", provider="ollama")
 
     async def simple_chat(self, message: str, history: list[dict] | None = None) -> str:
         """Simple conversational chat without tools."""
@@ -546,8 +716,8 @@ def create_ai_client(
         m = model or settings.GEMINI_MODEL or "gemini-2.5-flash"
         return GeminiClient(api_key=key, model=m)
     elif p == "ollama":
-        m = model or os.environ.get("OLLAMA_MODEL", "llama3")
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        m = model or settings.OLLAMA_MODEL or os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+        host = settings.OLLAMA_HOST or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         return OllamaClient(model=m, host=host)
     elif p == "openai":
         key = api_key or os.environ.get("OPENAI_API_KEY", "")

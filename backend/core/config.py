@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # ── Ollama (local, no key needed) ────────────────────────────────
     OLLAMA_HOST: str = Field(default="http://localhost:11434", description="Ollama server URL.")
-    OLLAMA_MODEL: str = Field(default="llama3", description="Ollama model name.")
+    OLLAMA_MODEL: str = Field(default="kali-cyber", description="Ollama model name.")
 
     # ── Database ─────────────────────────────────────────────────────
     DATABASE_PATH: str = Field(default="kali_ai.db", description="SQLite database file path.")

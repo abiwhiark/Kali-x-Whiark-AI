@@ -14,6 +14,7 @@ The core autonomous decision loop that:
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import logging
 from datetime import datetime, timezone
@@ -502,11 +503,16 @@ class AgentOrchestrator:
                     executed_tools.add(tool_id)
 
                     # ── Update target profile from tool output ─────────────────
-                    if tool_id == "nmap" and result.success:
+                    if tool_id in ("nmap", "nmap_scan") and result.success:
                         profile.update_from_nmap(result.output)
-                    elif tool_id == "whatweb" and result.success:
+                    elif tool_id in ("whatweb", "whatweb_scan") and result.success:
                         profile.update_from_whatweb(result.output)
-                    profile.tool_outputs[tool_id] = result.output[:2000]
+
+                    if isinstance(result.output, (dict, list)):
+                        serialized_output = json.dumps(result.output, default=str)
+                    else:
+                        serialized_output = str(result.output or "")
+                    profile.tool_outputs[tool_id] = serialized_output[:2000]
 
                     # ── Failure recovery: suggest fallback tool ────────────────
                     if not result.success and not self.is_demo_mode:
@@ -565,7 +571,7 @@ class AgentOrchestrator:
                     text = ai_response.text
 
                     # Plan phase
-                    if "Assessment Plan" in text:
+                    if "assessment plan" in text.lower():
                         assessment.status = AssessmentStatus.PLANNING
                         plan_lines = [l.strip() for l in text.splitlines() if l.strip().startswith(("-", "*", "1", "2", "3", "4", "5"))]
                         assessment.plan = AssessmentPlan(

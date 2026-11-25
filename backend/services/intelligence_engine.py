@@ -85,33 +85,73 @@ class TargetProfile:
             "endpoints": self.endpoints,
         }
 
-    def update_from_nmap(self, output: str) -> None:
-        """Parse nmap stdout to extract ports and services."""
-        for line in output.splitlines():
-            m = re.match(r"(\d+)/tcp\s+open\s+(\S+)", line)
-            if m:
-                port = int(m.group(1))
-                service = m.group(2)
-                if port not in self.open_ports:
-                    self.open_ports.append(port)
-                self.services[port] = service
+    def update_from_nmap(self, output: str | dict[str, Any]) -> None:
+        """Parse nmap output (structured dict from ToolRegistry or raw stdout str) for ports and services."""
+        if isinstance(output, dict):
+            for p in output.get("ports", []):
+                if not isinstance(p, dict):
+                    continue
+                if p.get("state") in ("open", "filtered", None, ""):
+                    try:
+                        port = int(p.get("port", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    service = str(p.get("service", "") or "")
+                    if port > 0:
+                        if port not in self.open_ports:
+                            self.open_ports.append(port)
+                        if service:
+                            self.services[port] = service
+            # Fallback to raw_xml/stdout if present
+            raw_text = str(output.get("raw_xml") or output.get("stdout") or "")
+            if raw_text and not self.open_ports:
+                self.update_from_nmap(raw_text)
+        elif isinstance(output, str):
+            for line in output.splitlines():
+                m = re.match(r"(\d+)/tcp\s+open\s+(\S+)", line)
+                if m:
+                    port = int(m.group(1))
+                    service = m.group(2)
+                    if port not in self.open_ports:
+                        self.open_ports.append(port)
+                    self.services[port] = service
+
         # Detect web ports
         web_ports = {80, 443, 8080, 8443, 8000, 8888, 3000}
         if any(p in web_ports for p in self.open_ports):
             if self.target_type == TargetType.UNKNOWN:
                 self.target_type = TargetType.WEB_APPLICATION
 
-    def update_from_whatweb(self, output: str) -> None:
-        """Parse WhatWeb output for tech stack."""
-        lower = output.lower()
+    def update_from_whatweb(self, output: str | dict[str, Any]) -> None:
+        """Parse WhatWeb output (structured dict from ToolRegistry or raw stdout str) for tech stack."""
+        if isinstance(output, dict):
+            parts: list[str] = []
+            for tech in output.get("technologies", []):
+                if isinstance(tech, dict):
+                    parts.append(str(tech.get("name", "")))
+                else:
+                    parts.append(str(tech))
+            headers = output.get("headers", {})
+            if isinstance(headers, dict):
+                parts.extend(f"{k} {v}" for k, v in headers.items())
+            if output.get("raw"):
+                parts.append(str(output.get("raw")))
+            lower = " ".join(parts).lower()
+        else:
+            lower = str(output).lower()
+
         if "wordpress" in lower:
             self.cms_type = "wordpress"
             if TechnologyStack.WORDPRESS not in self.technologies:
                 self.technologies.append(TechnologyStack.WORDPRESS)
         if "drupal" in lower:
             self.cms_type = "drupal"
+            if TechnologyStack.DRUPAL not in self.technologies:
+                self.technologies.append(TechnologyStack.DRUPAL)
         if "joomla" in lower:
             self.cms_type = "joomla"
+            if TechnologyStack.JOOMLA not in self.technologies:
+                self.technologies.append(TechnologyStack.JOOMLA)
         if "php" in lower and TechnologyStack.PHP not in self.technologies:
             self.technologies.append(TechnologyStack.PHP)
         if "nginx" in lower and TechnologyStack.NGINX not in self.technologies:
@@ -397,9 +437,10 @@ class IntelligentDecisionEngine:
 
     def get_fallback_tool(self, failed_tool: str, installed_tools: set[str]) -> str | None:
         """Return an alternative tool if the primary one failed."""
-        for fallback in self.FALLBACK_TOOLS.get(failed_tool, []):
+        base_name = failed_tool[:-5] if failed_tool.endswith("_scan") else failed_tool
+        for fallback in self.FALLBACK_TOOLS.get(base_name, []):
             if not installed_tools or fallback in installed_tools:
-                return fallback
+                return f"{fallback}_scan" if failed_tool.endswith("_scan") else fallback
         return None
 
     def score_tools_for_target(

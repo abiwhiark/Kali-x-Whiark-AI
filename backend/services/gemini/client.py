@@ -64,9 +64,8 @@ class AIResponse:
 # Working Gemini models (in preference order, newest/best first)
 GEMINI_MODELS_FALLBACK = [
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-2.5-flash-lite",  # lighter fallback
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
 ]
 
 
@@ -433,7 +432,7 @@ class DemoClient:
         obj_lower = user_objective.lower()
         func_results = [m for m in messages if m.get("role") == "function_result"]
         has_plan = any(
-            m.get("role") == "model" and "Assessment Plan" in m.get("content", "")
+            m.get("role") == "model" and "assessment plan" in m.get("content", "").lower()
             for m in messages
         )
 
@@ -541,6 +540,9 @@ def create_ai_client(
 
     if p == "gemini":
         key = api_key or settings.GEMINI_API_KEY
+        if not key or key in ("", "your_key_here"):
+            logger.warning("GEMINI_API_KEY not set — falling back to DemoClient.")
+            return DemoClient()
         m = model or settings.GEMINI_MODEL or "gemini-2.5-flash"
         return GeminiClient(api_key=key, model=m)
     elif p == "ollama":

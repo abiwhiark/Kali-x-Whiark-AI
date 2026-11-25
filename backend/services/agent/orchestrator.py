@@ -35,6 +35,10 @@ from backend.services.analysis.normalizer import FindingNormalizer
 from backend.services.analysis.correlator import FindingCorrelator
 from backend.services.reporting.generator import ReportGenerator
 from backend.database.db import save_assessment, update_assessment
+from backend.services.system_executor import run_system_command, detect_system_query
+from backend.services.intelligence_engine import (
+    IntelligentDecisionEngine, TargetProfile, AttackChain, TargetType
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +155,9 @@ class AgentOrchestrator:
         self._registry = create_registry()
         self._ai_client = create_ai_client()
         self._validator = SecurityValidator(self._registry)
+        self._decision_engine = IntelligentDecisionEngine()
+        # Per-session target profiles (target → TargetProfile)
+        self._target_profiles: dict[str, TargetProfile] = {}
 
     @property
     def tool_registry(self) -> ToolRegistry:
@@ -167,13 +174,40 @@ class AgentOrchestrator:
     async def run_assessment(
         self, objective: str, target: str | None = None
     ) -> AsyncGenerator[AgentEvent, None]:
-        """Run the autonomous agent loop and stream AgentEvents."""
+        """
+        Run the autonomous agent loop using HexStrike-style IntelligentDecisionEngine.
+        Streams AgentEvents as each step executes.
+        """
         self._validator.reset_counters()
         effective_target = extract_effective_target(objective, target)
 
         logger.info(
-            "Assessment starting — target=%s, allowed_targets=%s",
-            effective_target, self._settings.allowed_targets_list,
+            "Assessment starting — target=%s, objective=%s",
+            effective_target, objective[:80],
+        )
+
+        # ── Build / retrieve target profile ───────────────────────────────────
+        profile = self._target_profiles.get(effective_target)
+        if not profile:
+            profile = TargetProfile(target=effective_target)
+            profile.classify_target()
+            self._target_profiles[effective_target] = profile
+
+        # ── Get installed tools ────────────────────────────────────────────────
+        import shutil
+        installed_tools: set[str] = set()
+        from backend.services.kali_tool_runner import KALI_TOOL_MAP
+        for tool_id, (builder, _) in KALI_TOOL_MAP.items():
+            try:
+                dummy = builder({"target": "localhost"})
+                if shutil.which(dummy[0]):
+                    installed_tools.add(tool_id)
+            except Exception:
+                pass
+
+        # ── Build attack chain using IntelligentDecisionEngine ────────────────
+        attack_chain = self._decision_engine.build_attack_chain(
+            profile, objective, installed_tools
         )
 
         assessment = Assessment(
@@ -190,17 +224,33 @@ class AgentOrchestrator:
                 "objective": objective,
                 "target": effective_target,
                 "demo_mode": assessment.demo_mode,
+                "attack_chain_steps": len(attack_chain.steps),
+                "estimated_time": attack_chain.estimated_time,
             },
         )
 
+        # ── Emit the attack plan ───────────────────────────────────────────────
+        if attack_chain.steps:
+            plan_text = attack_chain.to_plan_text()
+            assessment.status = AssessmentStatus.PLANNING
+            yield AgentEvent(
+                event_type="plan",
+                data={"plan": plan_text, "step": 0},
+            )
+
+        # ── Build the AI conversation context ─────────────────────────────────
         conversation: list[dict[str, Any]] = [
             {
                 "role": "user",
                 "content": (
+                    f"Security Assessment\n"
                     f"Objective: {objective}\n"
-                    f"Authorized target: {effective_target}\n\n"
-                    "If the objective is a general question, answer it directly. "
-                    "If it is a security scan request, provide an assessment plan and select the appropriate tool."
+                    f"Authorized target: {effective_target}\n"
+                    f"Target type: {profile.target_type.value}\n\n"
+                    f"Planned tools: {', '.join(s.tool for s in attack_chain.steps)}\n\n"
+                    "Execute the security assessment step by step using the available tools. "
+                    "Start with the first tool in the plan. After each tool result, "
+                    "analyze the output and proceed to the next tool or finalize the report."
                 ),
             },
         ]
@@ -209,13 +259,17 @@ class AgentOrchestrator:
         max_iterations = self._settings.MAX_AGENT_ITERATIONS
         executed_tools: set[str] = set()
 
-        # Detect if the user asked for a single specific tool
+        # Whether user asked for one specific tool only
         obj_lower = objective.lower()
-        is_single_tool_request = not any(kw in obj_lower for kw in ["basic assessment", "security assessment", "full scan", "audit", "comprehensive"])
+        is_single_tool_request = not any(kw in obj_lower for kw in [
+            "basic assessment", "security assessment", "full scan",
+            "audit", "comprehensive", "full", "pentest", "penetration"
+        ])
         if is_single_tool_request:
             is_single_tool_request = any(kw in obj_lower for kw in [
                 "nmap", "port scan", "open port", "whatweb", "tech stack", "cms",
-                "nuclei", "cve", "sslyze", "ssl", "tls", "https", "nikto", "zap", "gobuster"
+                "nuclei", "cve", "sslyze", "ssl", "tls", "https", "nikto",
+                "zap", "gobuster", "sqlmap", "wpscan", "subfinder", "amass",
             ])
 
         try:
@@ -447,7 +501,35 @@ class AgentOrchestrator:
 
                     executed_tools.add(tool_id)
 
-                    # If this was a single-tool request (e.g. "local nmap scan")
+                    # ── Update target profile from tool output ─────────────────
+                    if tool_id == "nmap" and result.success:
+                        profile.update_from_nmap(result.output)
+                    elif tool_id == "whatweb" and result.success:
+                        profile.update_from_whatweb(result.output)
+                    profile.tool_outputs[tool_id] = result.output[:2000]
+
+                    # ── Failure recovery: suggest fallback tool ────────────────
+                    if not result.success and not self.is_demo_mode:
+                        fallback = self._decision_engine.get_fallback_tool(tool_id, installed_tools)
+                        if fallback and fallback not in executed_tools:
+                            conversation.append({
+                                "role": "user",
+                                "content": (
+                                    f"Tool `{tool_id}` failed: {result.error}\n"
+                                    f"The recommended fallback is `{fallback}`. "
+                                    f"Please use `{fallback}` on target `{effective_target}` instead."
+                                ),
+                            })
+                            yield AgentEvent(
+                                event_type="thinking",
+                                data={
+                                    "step": step_number,
+                                    "message": f"⚠️ {tool_id} failed — switching to fallback: {fallback}",
+                                },
+                            )
+                            continue
+
+                    # ── If this was a single-tool request ──────────────────────
                     if is_single_tool_request:
                         if not self.is_demo_mode:
                             # Prompt Gemini to provide in-depth technical analysis of the tool output
@@ -578,24 +660,62 @@ class AgentOrchestrator:
 
     async def chat(self, message: str, history: list[dict[str, Any]] | None = None) -> str:
         """
-        Conversational chat — routes to the active provider
-        (Gemini, OpenAI, Anthropic, Ollama, or Demo).
+        Conversational chat.
+        1. First checks if the message is a system query (ip, whoami, etc.)
+           → runs the real OS command and returns actual output.
+        2. Otherwise routes to the active AI provider.
         """
         if history is None:
             history = []
 
+        # ── STEP 1: System/OS query detection ─────────────────────────────────
+        # This is the HexStrike secret: "what is my ip" → runs ipconfig/ip a
+        # instead of letting AI hallucinate an answer.
+        sys_cmd = detect_system_query(message)
+        if sys_cmd:
+            result = await run_system_command(sys_cmd, timeout=15)
+            if result.success and result.stdout:
+                output = result.to_output()
+                # Let AI explain the output, but ground it in real data
+                explanation_prompt = (
+                    f"I ran `{sys_cmd}` on this system and got this output:\n\n"
+                    f"```\n{output[:3000]}\n```\n\n"
+                    f"The user asked: \"{message}\"\n\n"
+                    f"Please explain the key information from this real system output "
+                    f"in a clear, concise way. Do NOT guess — use only what's shown above."
+                )
+                try:
+                    messages = [{"role": "user", "content": explanation_prompt}]
+                    resp = await self._ai_client.chat(messages, [], system_prompt=(
+                        "You are Kali AI. When given real command output, explain it accurately. "
+                        "Never make up data — only describe what is shown in the output."
+                    ))
+                    return f"🖥️ **Real system output** (`{sys_cmd}`):\n```\n{output[:2000]}\n```\n\n{resp.text}"
+                except Exception:
+                    return f"🖥️ **Real system output** (`{sys_cmd}`):\n```\n{output}\n```"
+            elif not result.success:
+                return (
+                    f"❌ Command `{sys_cmd}` failed: {result.error}\n\n"
+                    f"Try running it manually in your terminal."
+                )
+
+        # ── STEP 2: Normal AI chat ─────────────────────────────────────────────
         SYSTEM = (
-            "You are Kali AI — Whiark × Kali AI — an expert autonomous cybersecurity assistant. "
-            "You help ethical hackers, penetration testers, bug bounty hunters, and students with:\n"
+            "You are Kali AI — Whiark × Kali AI — an expert autonomous cybersecurity assistant "
+            "running on the user's local machine. You have access to real Kali Linux tools "
+            "via subprocess execution.\n\n"
+            "You help ethical hackers, penetration testers, bug bounty hunters, and students:\n"
             "- Cybersecurity concepts, OWASP Top 10, CVEs, cryptography, network protocols\n"
             "- CTF challenges, forensics, reverse engineering, exploit methodology\n"
-            "- Kali Linux tools: Nmap, Nikto, Gobuster, SQLMap, Hydra, John, Metasploit, ZAP, Burp\n"
+            "- Kali Linux tools: Nmap, Nikto, Gobuster, SQLMap, Hydra, Metasploit, ZAP, Burp\n"
             "- Writing Python, Bash, Go, PowerShell security scripts\n"
-            "- Remediation, hardening, and defensive security\n"
+            "- Remediation, hardening, and defensive security\n\n"
+            "IMPORTANT: For system information questions (ip address, running processes, OS version, "
+            "open ports, disk space, etc.), the system will automatically run real OS commands and "
+            "provide real data — you will receive that data to explain.\n\n"
             "Format responses in clean Markdown with code blocks and concise explanations."
         )
 
-        # Build message list for the provider
         messages: list[dict[str, Any]] = []
         for h in history[-20:]:
             role = h.get("role", "user")
@@ -605,11 +725,9 @@ class AgentOrchestrator:
         messages.append({"role": "user", "content": message})
 
         try:
-            # Use Ollama simple_chat if provider is Ollama
             if isinstance(self._ai_client, OllamaClient):
                 return await self._ai_client.simple_chat(message, history)
 
-            # Use provider's chat()
             resp = await self._ai_client.chat(messages, [], system_prompt=SYSTEM)
             return resp.text or "No response generated."
 

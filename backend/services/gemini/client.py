@@ -61,13 +61,12 @@ class AIResponse:
 
 # ── GEMINI CLIENT ─────────────────────────────────────────────────────
 
-# Working Gemini models (in preference order, most reliable & high-quota first)
+# Working Gemini models (in preference order, newest/best first)
 GEMINI_MODELS_FALLBACK = [
-    "gemini-1.5-flash",
-    "gemini-3.8-flash",
-    "gemini-1.5-pro",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash-lite",  # lighter fallback
 ]
 
 
@@ -77,7 +76,7 @@ class GeminiClient:
     def __init__(self, api_key: str = "", model: str = "") -> None:
         settings = get_settings()
         self._api_key = api_key or settings.GEMINI_API_KEY
-        self._model_name = model or settings.GEMINI_MODEL or "gemini-1.5-flash"
+        self._model_name = model or settings.GEMINI_MODEL or "gemini-2.5-flash"
 
         from google import genai
         # v1beta required for system_instruction support
@@ -542,7 +541,7 @@ def create_ai_client(
 
     if p == "gemini":
         key = api_key or settings.GEMINI_API_KEY
-        m = model or settings.GEMINI_MODEL or "gemini-3.8-flash"
+        m = model or settings.GEMINI_MODEL or "gemini-2.5-flash"
         return GeminiClient(api_key=key, model=m)
     elif p == "ollama":
         m = model or os.environ.get("OLLAMA_MODEL", "llama3")

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # ── Gemini ───────────────────────────────────────────────────────
     GEMINI_API_KEY: str = Field(default="", description="Gemini API key.")
-    GEMINI_MODEL: str = Field(default="gemini-1.5-flash", description="Gemini model.")
+    GEMINI_MODEL: str = Field(default="gemini-2.5-flash", description="Gemini model.")
 
     # ── OpenAI ───────────────────────────────────────────────────────
     OPENAI_API_KEY: str = Field(default="", description="OpenAI API key.")

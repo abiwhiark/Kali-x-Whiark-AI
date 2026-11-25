@@ -116,7 +116,7 @@ def rprint(msg: str) -> None:
 
 # ─── Provider Setup (like ChainRaptor) ───────────────────────────
 PROVIDERS = {
-    "1": ("gemini",    "Google Gemini",   "GEMINI_API_KEY",  "gemini-2.0-flash"),
+    "1": ("gemini",    "Google Gemini",   "GEMINI_API_KEY",  "gemini-2.5-flash"),
     "2": ("anthropic", "Anthropic Claude","ANTHROPIC_API_KEY","claude-3-5-sonnet-20241022"),
     "3": ("openai",    "OpenAI GPT",      "OPENAI_API_KEY",  "gpt-4o-mini"),
     "4": ("ollama",    "Local Ollama",    None,              "llama3"),
@@ -166,7 +166,7 @@ def get_active_provider(cfg: dict) -> str:
 
 def get_model_name(cfg: dict) -> str:
     p = get_active_provider(cfg)
-    return cfg.get(f"{p}_model", "gemini-3.8-flash")
+    return cfg.get(f"{p}_model", "gemini-2.5-flash")
 
 def initialize_from_env() -> dict:
     """Build config from .env — multi-provider aware."""
@@ -187,7 +187,7 @@ def initialize_from_env() -> dict:
             cfg["active"] = "ollama"
     # Carry model info
     if not cfg.get("gemini_model"):
-        cfg["gemini_model"] = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+        cfg["gemini_model"] = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     return cfg
 
 
@@ -895,6 +895,29 @@ async def interactive_loop(orchestrator, cfg: dict) -> None:
                 orchestrator = AgentOrchestrator()
             except Exception:
                 cfg = setup_provider(cfg)
+
+        # ── Direct OS / shell commands (HexStrike-style real execution) ──────
+        # User can type raw commands like: ipconfig, whoami, netstat, tasklist, etc.
+        elif lower.startswith((
+            "ipconfig", "ifconfig", "ip a", "ip addr", "ip route",
+            "whoami", "hostname", "uname", "systeminfo",
+            "netstat", "ss -", "ss -tulnp",
+            "ps aux", "tasklist",
+            "arp -a", "arp -n", "route print", "route -n",
+            "df -h", "df -hT", "du -sh", "free -h", "free -m",
+            "docker ps", "docker images", "kubectl get",
+            "cat /etc/os-release", "lsb_release",
+            "id ", "id\n", "pwd", "ls -la", "dir /a",
+        )):
+            from backend.services.system_executor import run_system_command
+            rprint(f"\n  [dim]⚡ Running: [bold cyan]{user_input}[/bold cyan][/dim]")
+            result = await run_system_command(user_input.strip(), timeout=20)
+            if HAS_RICH:
+                from rich.syntax import Syntax
+                console.print(Syntax(result.to_output(), "bash", theme="monokai", line_numbers=False))
+            else:
+                print(result.to_output())
+            rprint("")
 
         # ── Autonomous Scan Mode vs Conversational Chat Mode ──
         elif is_scan_request(user_input, has_target=bool(persistent_target)):

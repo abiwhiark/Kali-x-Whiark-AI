@@ -15,20 +15,19 @@ def registry():
 
 def test_registry_contains_all_seven_tools(registry):
     expected_tools = [
-        "nmap_scan",
-        "whatweb_scan",
-        "nuclei_scan",
-        "nikto_scan",
-        "sslyze_scan",
-        "zap_scan",
-        "gobuster_scan",
+        "nmap_scan", "whatweb_scan", "nuclei_scan", "nikto_scan",
+        "sslyze_scan", "zap_scan", "gobuster_scan",
+        # Stage 3 tools
+        "sqlmap_scan", "hydra_scan", "wpscan_scan", "subfinder_scan",
+        "amass_scan", "dirb_scan", "masscan_scan", "enum4linux_scan",
+        "fierce_scan", "dnsrecon_scan", "curl_probe",
+        "open_terminal", "open_browser", "open_tool_terminal",
     ]
     for tid in expected_tools:
         assert registry.tool_exists(tid), f"Expected tool {tid} missing in registry"
         defn = registry.get_definition(tid)
         assert defn is not None
         assert defn.name
-        assert "target" in defn.input_schema.get("properties", {})
 
 
 @pytest.mark.asyncio

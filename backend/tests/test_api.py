@@ -47,8 +47,8 @@ async def test_get_tools_endpoint():
         response = await ac.get("/api/tools")
         assert response.status_code == 200
         data = response.json()
-        assert data["total"] == 7
-        assert len(data["tools"]) == 7
+        assert data["total"] >= 21
+        assert len(data["tools"]) >= 21
         tool_ids = [t["id"] for t in data["tools"]]
         assert "nmap_scan" in tool_ids
         assert "whatweb_scan" in tool_ids

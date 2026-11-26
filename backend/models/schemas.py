@@ -37,9 +37,12 @@ class ToolCategory(str, Enum):
     WEB_ANALYSIS = "web_analysis"
     SSL_TLS = "ssl_tls"
     DISCOVERY = "discovery"
+    EXPLOITATION = "exploitation"
+    UTILITY = "utility"
 
 
 class RiskLevel(str, Enum):
+    CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"

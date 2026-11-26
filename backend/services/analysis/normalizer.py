@@ -306,22 +306,20 @@ class FindingNormalizer:
 
         return findings
 
-    # ──────────────────────────────────────────────
-    # 7. Gobuster Normalization
-    # ──────────────────────────────────────────────
     @classmethod
     def _normalize_gobuster_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
         findings: list[Finding] = []
         host = output.get("target", target)
         paths = output.get("discovered_paths", [])
 
-        sensitive_routes = ["/admin", "/wp-admin", "/login", "/config", "/.git", "/backup"]
+        sensitive_routes = ["/admin", "/wp-admin", "/login", "/config", "/.git", "/backup",
+                            "/.env", "/.htaccess", "/phpmyadmin", "/cpanel", "/secret"]
 
         for item in paths:
             path = item.get("path", "")
             status_code = item.get("status")
 
-            if any(path.startswith(sr) for sr in sensitive_routes):
+            if any(path.lower().startswith(sr) for sr in sensitive_routes):
                 findings.append(Finding(
                     title=f"Sensitive Endpoint Discovered: {path}",
                     severity=Severity.MEDIUM if status_code == 200 else Severity.LOW,
@@ -335,5 +333,403 @@ class FindingNormalizer:
                     source_tool="gobuster_scan",
                     verification_status="verified",
                 ))
+            elif status_code and status_code not in (301, 302, 403):
+                findings.append(Finding(
+                    title=f"Directory/File Found: {path} (HTTP {status_code})",
+                    severity=Severity.INFORMATIONAL,
+                    confidence=Confidence.CONFIRMED,
+                    category="Content Discovery",
+                    affected_asset=f"{host}{path}",
+                    description=f"Content at '{path}' returned HTTP {status_code}.",
+                    evidence=[f"Path: {path}", f"HTTP Status: {status_code}"],
+                    impact="Exposes application structure to reconnaissance.",
+                    remediation="Ensure non-public endpoints require authentication.",
+                    source_tool="gobuster_scan",
+                    verification_status="verified",
+                ))
 
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 8. SQLMap Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_sqlmap_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        injectable = output.get("injectable_parameters", [])
+
+        for param in injectable:
+            findings.append(Finding(
+                title=f"SQL Injection Vulnerability Detected",
+                severity=Severity.CRITICAL,
+                confidence=Confidence.CONFIRMED,
+                category="Injection",
+                affected_asset=host,
+                description=f"Parameter is injectable to SQL: {param}",
+                evidence=[param],
+                impact="Full database compromise, data exfiltration, authentication bypass possible.",
+                remediation="Use parameterized queries / prepared statements. Never interpolate user input into SQL.",
+                source_tool="sqlmap_scan",
+                verification_status="verified",
+            ))
+
+        if output.get("mock"):
+            return findings
+
+        # Check stdout for additional signals
+        stdout = output.get("stdout", "")
+        if "is vulnerable" in stdout.lower() and not injectable:
+            findings.append(Finding(
+                title="Potential SQL Injection Detected",
+                severity=Severity.HIGH,
+                confidence=Confidence.POTENTIAL,
+                category="Injection",
+                affected_asset=host,
+                description="SQLMap reported potential injection — review raw output.",
+                evidence=[stdout[:300]],
+                impact="Possible database compromise.",
+                remediation="Use prepared statements and input validation.",
+                source_tool="sqlmap_scan",
+                verification_status="unverified",
+            ))
+
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 9. Hydra Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_hydra_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        service = output.get("service", "ssh")
+        cracked = output.get("cracked_credentials", [])
+
+        for cred in cracked:
+            findings.append(Finding(
+                title=f"Weak Credential Found on {service.upper()}",
+                severity=Severity.CRITICAL,
+                confidence=Confidence.CONFIRMED,
+                category="Authentication Weakness",
+                affected_asset=host,
+                description=f"Brute-force succeeded on {service}: {cred}",
+                evidence=[cred],
+                impact="Complete account takeover. Attacker has valid login credentials.",
+                remediation="Enforce strong passwords, MFA, and account lockout policies.",
+                source_tool="hydra_scan",
+                verification_status="verified",
+            ))
+
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 10. WPScan Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_wpscan_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+
+        # WordPress version vulnerability
+        version = output.get("version", {})
+        if isinstance(version, dict) and version.get("vulnerabilities"):
+            for vuln in version["vulnerabilities"]:
+                findings.append(Finding(
+                    title=f"WordPress Core Vulnerability: {vuln.get('title', 'Unknown')}",
+                    severity=Severity.HIGH,
+                    confidence=Confidence.CONFIRMED,
+                    category="CMS Vulnerability",
+                    affected_asset=host,
+                    description=vuln.get("title", "WordPress core vulnerability detected."),
+                    evidence=[f"WP Version: {version.get('number')}", f"CVE: {vuln.get('references', {}).get('cve', ['N/A'])[0]}"],
+                    impact="Remote code execution or privilege escalation.",
+                    remediation="Update WordPress core to the latest stable version.",
+                    source_tool="wpscan_scan",
+                    verification_status="verified",
+                ))
+
+        # Plugin vulnerabilities
+        plugins = output.get("plugins", [])
+        for plugin in plugins:
+            if isinstance(plugin, dict) and plugin.get("vulnerabilities"):
+                slug = plugin.get("slug", "unknown")
+                for vuln in plugin["vulnerabilities"]:
+                    findings.append(Finding(
+                        title=f"Vulnerable WordPress Plugin: {slug}",
+                        severity=Severity.MEDIUM,
+                        confidence=Confidence.CONFIRMED,
+                        category="CMS Plugin Vulnerability",
+                        affected_asset=f"{host}/wp-content/plugins/{slug}",
+                        description=vuln.get("title", f"Plugin {slug} has known vulnerability."),
+                        evidence=[f"Plugin: {slug}", f"Version: {plugin.get('version', {}).get('number', 'unknown')}"],
+                        impact="Potential exploitation of known CVE in plugin.",
+                        remediation=f"Update or remove plugin '{slug}'.",
+                        source_tool="wpscan_scan",
+                        verification_status="verified",
+                    ))
+
+        # Exposed users
+        users = output.get("users", [])
+        if users:
+            findings.append(Finding(
+                title=f"WordPress User Enumeration: {len(users)} users found",
+                severity=Severity.LOW,
+                confidence=Confidence.CONFIRMED,
+                category="Information Disclosure",
+                affected_asset=host,
+                description=f"WordPress user accounts discoverable: {', '.join(users[:5])}",
+                evidence=[f"Users: {', '.join(users[:5])}"],
+                impact="Enables targeted brute-force attacks against enumerated accounts.",
+                remediation="Disable user enumeration via REST API and login error disclosure.",
+                source_tool="wpscan_scan",
+                verification_status="verified",
+            ))
+
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 11. Subfinder / Amass Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_subfinder_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        return cls._normalize_subdomain_output(output, target, "subfinder_scan")
+
+    @classmethod
+    def _normalize_amass_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        return cls._normalize_subdomain_output(output, target, "amass_scan")
+
+    @classmethod
+    def _normalize_subdomain_output(cls, output: dict[str, Any], target: str, tool_id: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        subdomains = output.get("subdomains", [])
+        count = len(subdomains)
+
+        if count > 0:
+            findings.append(Finding(
+                title=f"Subdomains Discovered: {count} host(s) found",
+                severity=Severity.INFORMATIONAL,
+                confidence=Confidence.CONFIRMED,
+                category="Reconnaissance",
+                affected_asset=host,
+                description=f"Passive subdomain enumeration discovered {count} subdomains under {host}.",
+                evidence=subdomains[:10],
+                impact="Expands attack surface; dev/staging subdomains may expose unpatched services.",
+                remediation="Audit all subdomains. Remove unused/legacy subdomains and restrict staging access.",
+                source_tool=tool_id,
+                verification_status="verified",
+            ))
+
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 12. Fierce / DNSRecon Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_fierce_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        return cls._normalize_dns_recon_output(output, target, "fierce_scan", "found_hosts")
+
+    @classmethod
+    def _normalize_dnsrecon_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        records = output.get("records", [])
+        zone_transfers = [r for r in records if r.get("type") == "AXFR"]
+        if zone_transfers:
+            findings.append(Finding(
+                title="DNS Zone Transfer Allowed",
+                severity=Severity.HIGH,
+                confidence=Confidence.CONFIRMED,
+                category="DNS Security",
+                affected_asset=host,
+                description="The DNS server allows zone transfer (AXFR), exposing the full DNS zone to anyone.",
+                evidence=[str(r) for r in zone_transfers[:3]],
+                impact="Reveals all subdomains and internal host names, drastically expanding the attack surface.",
+                remediation="Restrict AXFR to authorized secondary DNS servers only.",
+                source_tool="dnsrecon_scan",
+                verification_status="verified",
+            ))
+        if records:
+            findings.append(Finding(
+                title=f"DNS Records Enumerated: {len(records)} records",
+                severity=Severity.INFORMATIONAL,
+                confidence=Confidence.CONFIRMED,
+                category="Reconnaissance",
+                affected_asset=host,
+                description=f"DNS enumeration retrieved {len(records)} records for {host}.",
+                evidence=[str(r) for r in records[:5]],
+                impact="DNS profile reveals mail servers, CDNs, and infrastructure.",
+                remediation="Minimize DNS information exposure; remove unnecessary records.",
+                source_tool="dnsrecon_scan",
+                verification_status="verified",
+            ))
+        return findings
+
+    @classmethod
+    def _normalize_dns_recon_output(cls, output: dict[str, Any], target: str, tool_id: str, host_key: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        hosts = output.get(host_key, [])
+        if hosts:
+            findings.append(Finding(
+                title=f"DNS Hosts Discovered: {len(hosts)} entries",
+                severity=Severity.INFORMATIONAL,
+                confidence=Confidence.CONFIRMED,
+                category="Reconnaissance",
+                affected_asset=host,
+                description=f"DNS recon discovered {len(hosts)} hosts under {host}.",
+                evidence=hosts[:10],
+                impact="Exposes DNS infrastructure and potential internal host names.",
+                remediation="Restrict DNS responses to authorized resolvers.",
+                source_tool=tool_id,
+                verification_status="verified",
+            ))
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 13. Masscan Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_masscan_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        open_ports = output.get("open_ports", [])
+        if open_ports:
+            findings.append(Finding(
+                title=f"Open Ports Detected via Masscan: {len(open_ports)} port(s)",
+                severity=Severity.INFORMATIONAL,
+                confidence=Confidence.CONFIRMED,
+                category="Port Discovery",
+                affected_asset=host,
+                description=f"Masscan found {len(open_ports)} open TCP/UDP ports.",
+                evidence=[f"{p.get('port')}/{p.get('proto','tcp')}" for p in open_ports[:20]],
+                impact="Exposed services increase attack surface.",
+                remediation="Firewall all non-required ports.",
+                source_tool="masscan_scan",
+                verification_status="verified",
+            ))
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 14. Enum4linux Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_enum4linux_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        shares = output.get("shares", [])
+        users = output.get("users", [])
+
+        if shares:
+            public_shares = [s for s in shares if s not in ("IPC$",)]
+            if public_shares:
+                findings.append(Finding(
+                    title=f"SMB Shares Exposed: {', '.join(public_shares)}",
+                    severity=Severity.MEDIUM,
+                    confidence=Confidence.CONFIRMED,
+                    category="Network Service Exposure",
+                    affected_asset=f"{host}:445",
+                    description=f"SMB shares accessible: {', '.join(public_shares)}",
+                    evidence=public_shares,
+                    impact="Potential data exfiltration or lateral movement via SMB.",
+                    remediation="Restrict SMB access and audit share permissions.",
+                    source_tool="enum4linux_scan",
+                    verification_status="verified",
+                ))
+
+        if users:
+            findings.append(Finding(
+                title=f"Windows User Accounts Enumerated: {len(users)} users",
+                severity=Severity.LOW,
+                confidence=Confidence.CONFIRMED,
+                category="Information Disclosure",
+                affected_asset=host,
+                description=f"SMB user enumeration: {', '.join(users[:5])}",
+                evidence=users[:10],
+                impact="Enables targeted password attacks against enumerated accounts.",
+                remediation="Disable null session enumeration; require authentication for all SMB queries.",
+                source_tool="enum4linux_scan",
+                verification_status="verified",
+            ))
+
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 15. Curl Probe Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_curl_probe(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        headers = output.get("headers", {})
+        status = output.get("status_code", 0)
+
+        security_headers = {
+            "Strict-Transport-Security": "Missing HSTS Header",
+            "Content-Security-Policy": "Missing Content-Security-Policy Header",
+            "X-Frame-Options": "Missing X-Frame-Options Header",
+            "X-Content-Type-Options": "Missing X-Content-Type-Options Header",
+            "Referrer-Policy": "Missing Referrer-Policy Header",
+        }
+
+        normalized_headers = {k.lower(): v for k, v in headers.items()}
+        for hdr, msg in security_headers.items():
+            if hdr.lower() not in normalized_headers:
+                findings.append(Finding(
+                    title=msg,
+                    severity=Severity.LOW,
+                    confidence=Confidence.CONFIRMED,
+                    category="Security Header",
+                    affected_asset=host,
+                    description=f"The HTTP response is missing the {hdr} security header.",
+                    evidence=[f"Header '{hdr}' not present in response"],
+                    impact="Increases risk of clickjacking, MIME sniffing, or cross-site scripting.",
+                    remediation=f"Add '{hdr}' to web server response headers.",
+                    source_tool="curl_probe",
+                    verification_status="verified",
+                ))
+
+        if "Server" in headers:
+            findings.append(Finding(
+                title=f"Server Banner Disclosed: {headers['Server']}",
+                severity=Severity.LOW,
+                confidence=Confidence.CONFIRMED,
+                category="Information Disclosure",
+                affected_asset=host,
+                description=f"Server header reveals software: {headers['Server']}",
+                evidence=[f"Server: {headers['Server']}"],
+                impact="Enables targeted exploit selection.",
+                remediation="Suppress or genericize the Server response header.",
+                source_tool="curl_probe",
+                verification_status="verified",
+            ))
+
+        return findings
+
+    # ──────────────────────────────────────────────
+    # 16. Dirb Normalization
+    # ──────────────────────────────────────────────
+    @classmethod
+    def _normalize_dirb_scan(cls, output: dict[str, Any], target: str) -> list[Finding]:
+        findings: list[Finding] = []
+        host = output.get("target", target)
+        paths = output.get("discovered_paths", [])
+        sensitive = ["/admin", "/backup", "/.git", "/.env", "/config", "/secret", "/phpmyadmin"]
+        for item in paths:
+            path = str(item.get("path", ""))
+            if any(s in path.lower() for s in sensitive):
+                findings.append(Finding(
+                    title=f"Sensitive Path Found: {path}",
+                    severity=Severity.MEDIUM,
+                    confidence=Confidence.CONFIRMED,
+                    category="Content Discovery",
+                    affected_asset=path,
+                    description=f"Dirb found potentially sensitive path: {path}",
+                    evidence=[path],
+                    impact="Unauthorized access to admin panels or leaked configuration.",
+                    remediation="Restrict or remove sensitive endpoints.",
+                    source_tool="dirb_scan",
+                    verification_status="verified",
+                ))
         return findings

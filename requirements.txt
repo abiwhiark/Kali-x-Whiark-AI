@@ -1,0 +1,2 @@
+# Install Kali x Whiark AI Python dependencies from repo root or backend/
+-r backend/requirements.txt

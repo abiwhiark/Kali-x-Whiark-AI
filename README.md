@@ -53,6 +53,13 @@ python3 cli.py
 
 ## ⚠️ Common Errors & Fixes
 
+### Error: `git pull origin main` → `Your local changes to .env.example would be overwritten by merge`
+Never put your API key in `.env.example` (put it in `.env`, which is ignored by git). To pull cleanly:
+```bash
+git checkout -- .env.example
+git pull origin main
+```
+
 ### Error: `ImportError: cannot import name 'genai' from 'google'`
 ```bash
 # Fix: Install requirements inside the virtual environment
@@ -60,6 +67,7 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install -r backend/requirements.txt
 ```
+> Note: `cli.py` now automatically switches to `./venv` if present and includes a built-in Gemini REST fallback if `google-genai` is not installed.
 
 ### Error: `ModuleNotFoundError: No module named 'dotenv'`
 ```bash
@@ -189,27 +197,6 @@ KaliAI ❯ quit            # exit
 
 ---
 
-## 🌐 Web Dashboard (Optional)
-
-For the full browser-based UI:
-
-**Terminal 1 — Backend:**
-```bash
-source venv/bin/activate
-python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-**Terminal 2 — Frontend:**
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open: **http://localhost:5173**
-
----
-
 ## 🗂️ Project Structure
 
 ```
@@ -218,10 +205,9 @@ Kali-x-Whiark-AI/
 ├── .env.example                        # 📋 Copy to .env and add API key
 ├── backend/
 │   ├── requirements.txt                # 📦 Python dependencies
-│   ├── main.py                         # FastAPI app
 │   ├── services/
 │   │   ├── agent/orchestrator.py       # 🧠 AI decision loop
-│   │   ├── kali_tool_runner.py         # ⚔️  28 Kali tools runner
+│   │   ├── kali_tool_runner.py         # ⚔️  27 Kali tools runner
 │   │   ├── terminal_launcher.py        # 🖥️  Open real terminals
 │   │   ├── browser_launcher.py         # 🌐 Open real browsers
 │   │   ├── zap_scanner.py              # 🕷️  OWASP ZAP automation
@@ -231,13 +217,12 @@ Kali-x-Whiark-AI/
 │   │   │   ├── validator.py            # 🛡️  Security validator
 │   │   │   └── consent_gate.py         # ✅ Authorization consent gate
 │   │   ├── tool_registry/registry.py   # 🗄️  Tool registry
-│   │   ├── gemini/client.py            # 🤖 Gemini AI client
+│   │   ├── gemini/client.py            # 🤖 Multi-provider AI client
 │   │   ├── analysis/
 │   │   │   ├── normalizer.py           # Finding normalizer
 │   │   │   └── correlator.py           # Finding correlator
 │   │   └── reporting/generator.py      # 📊 Report generator
-│   └── tests/                          # ✅ 41 pytest tests
-└── frontend/                           # React dashboard
+│   └── tests/                          # ✅ Pytest test suite
 ```
 
 ---

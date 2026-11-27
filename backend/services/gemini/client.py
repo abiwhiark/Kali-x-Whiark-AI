@@ -70,21 +70,32 @@ GEMINI_MODELS_FALLBACK = [
 
 
 class GeminiClient:
-    """Google Gemini API client with automatic model fallback."""
+    """Google Gemini API client with automatic model fallback and REST fallback."""
 
     def __init__(self, api_key: str = "", model: str = "") -> None:
         settings = get_settings()
         self._api_key = api_key or settings.GEMINI_API_KEY
         self._model_name = model or settings.GEMINI_MODEL or "gemini-2.5-flash"
+        self._genai = None
+        self._client = None
 
-        from google import genai
-        # v1beta required for system_instruction support
-        self._client = genai.Client(
-            api_key=self._api_key,
-            http_options={"api_version": "v1beta"},
-        )
-        self._genai = genai
-        logger.info("GeminiClient initialized — model=%s", self._model_name)
+        try:
+            from google import genai
+            # v1beta required for system_instruction support
+            self._client = genai.Client(
+                api_key=self._api_key,
+                http_options={"api_version": "v1beta"},
+            )
+            self._genai = genai
+            logger.info("GeminiClient initialized (SDK) — model=%s", self._model_name)
+        except ImportError as exc:
+            # Prevents crash when running outside venv or when Kali system
+            # `google` namespace package shadows/lacks `google-genai`.
+            logger.warning(
+                "google-genai SDK unavailable (%s); using built-in Gemini v1beta REST transport. "
+                "(For native SDK run: source venv/bin/activate && pip install -r backend/requirements.txt)",
+                exc,
+            )
 
     def _next_model(self) -> str | None:
         """Return next model in fallback list, or None if exhausted."""
@@ -96,72 +107,191 @@ class GeminiClient:
             pass
         return None
 
+    @staticmethod
+    def _build_rest_payload(
+        messages: list[dict[str, Any]],
+        func_decls: list[dict[str, Any]],
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> dict[str, Any]:
+        """Build JSON request payload for Gemini v1beta generateContent REST API."""
+        contents: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            if role == "system":
+                continue
+            if role == "function_result":
+                raw_content = msg.get("content", {})
+                resp_obj = raw_content if isinstance(raw_content, dict) else {"result": raw_content}
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": msg["name"],
+                            "response": resp_obj,
+                        }
+                    }],
+                })
+            elif role == "model_function_call":
+                contents.append({
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": msg["name"],
+                            "args": msg.get("args") or {},
+                        }
+                    }],
+                })
+            else:
+                gemini_role = "user" if role == "user" else "model"
+                contents.append({
+                    "role": gemini_role,
+                    "parts": [{"text": str(msg.get("content", ""))}],
+                })
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"temperature": temperature},
+        }
+        if system_prompt:
+            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        if func_decls:
+            payload["tools"] = [{"functionDeclarations": func_decls}]
+        return payload
+
+    def _generate_via_rest(self, model_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call Gemini v1beta REST endpoint using Python stdlib (zero SDK deps)."""
+        import json
+        import urllib.error
+        import urllib.request
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        body = json.dumps(payload, default=str).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self._api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {he.code}: {err_body}") from he
+
+    @staticmethod
+    def _parse_rest_response(resp_json: dict[str, Any]) -> AIResponse:
+        candidates = resp_json.get("candidates") or []
+        if not candidates:
+            return AIResponse(text="No response generated.", provider="gemini")
+        parts = candidates[0].get("content", {}).get("parts") or []
+        text_parts = [p["text"] for p in parts if isinstance(p, dict) and p.get("text")]
+        for part in parts:
+            if isinstance(part, dict) and part.get("functionCall"):
+                fc = part["functionCall"]
+                return AIResponse(
+                    text="\n".join(text_parts) if text_parts else "",
+                    function_call={
+                        "name": fc.get("name", ""),
+                        "args": fc.get("args") if isinstance(fc.get("args"), dict) else {},
+                    },
+                    finish_reason="function_call",
+                    provider="gemini",
+                )
+        return AIResponse(text="\n".join(text_parts) if text_parts else "", provider="gemini")
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
         tools: list[ToolDefinition],
         system_prompt: str = "",
+        temperature: float = 0.2,
     ) -> AIResponse:
-        from google.genai import types
         import asyncio
 
         func_decls = _build_function_declarations(tools)
-        gemini_tools = [types.Tool(function_declarations=[
-            types.FunctionDeclaration(
-                name=fd["name"],
-                description=fd["description"],
-                parameters=fd["parameters"],
-            )
-            for fd in func_decls
-        ])] if func_decls else []
-
-        contents = []
-        for msg in messages:
-            role = msg["role"]
-            if role == "system":
-                continue
-            if role == "function_result":
-                contents.append(types.Content(
-                    role="user",
-                    parts=[types.Part.from_function_response(
-                        name=msg["name"], response=msg["content"],
-                    )],
-                ))
-            elif role == "model_function_call":
-                contents.append(types.Content(
-                    role="model",
-                    parts=[types.Part.from_function_call(
-                        name=msg["name"], args=msg["args"],
-                    )],
-                ))
-            else:
-                gemini_role = "user" if role == "user" else "model"
-                contents.append(types.Content(
-                    role=gemini_role,
-                    parts=[types.Part.from_text(text=msg["content"])],
-                ))
-
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt if system_prompt else None,
-            tools=gemini_tools if gemini_tools else None,
-            temperature=0.2,
-        )
-
-        # Build candidate models starting with preferred model, then remaining fallbacks
         candidate_models = [self._model_name] + [m for m in GEMINI_MODELS_FALLBACK if m != self._model_name]
 
+        # ── Path A: Official google-genai SDK ──────────────────────────
+        sdk_config = None
+        sdk_contents = None
+        if self._client is not None:
+            try:
+                from google.genai import types
+                gemini_tools = [types.Tool(function_declarations=[
+                    types.FunctionDeclaration(
+                        name=fd["name"],
+                        description=fd["description"],
+                        parameters=fd["parameters"],
+                    )
+                    for fd in func_decls
+                ])] if func_decls else []
+
+                sdk_contents = []
+                for msg in messages:
+                    role = msg["role"]
+                    if role == "system":
+                        continue
+                    if role == "function_result":
+                        raw_resp = msg["content"]
+                        resp_dict = raw_resp if isinstance(raw_resp, dict) else {"result": raw_resp}
+                        sdk_contents.append(types.Content(
+                            role="user",
+                            parts=[types.Part.from_function_response(
+                                name=msg["name"], response=resp_dict,
+                            )],
+                        ))
+                    elif role == "model_function_call":
+                        sdk_contents.append(types.Content(
+                            role="model",
+                            parts=[types.Part.from_function_call(
+                                name=msg["name"], args=msg["args"],
+                            )],
+                        ))
+                    else:
+                        gemini_role = "user" if role == "user" else "model"
+                        sdk_contents.append(types.Content(
+                            role=gemini_role,
+                            parts=[types.Part.from_text(text=msg["content"])],
+                        ))
+
+                sdk_config = types.GenerateContentConfig(
+                    system_instruction=system_prompt if system_prompt else None,
+                    tools=gemini_tools if gemini_tools else None,
+                    temperature=temperature,
+                )
+            except ImportError:
+                self._client = None
+
+        rest_payload = (
+            self._build_rest_payload(messages, func_decls, system_prompt, temperature=temperature)
+            if self._client is None
+            else None
+        )
+
+        sdk_response = None
+        rest_response = None
         for attempt_model in candidate_models:
             try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._client.models.generate_content,
-                        model=attempt_model,
-                        contents=contents,
-                        config=config,
-                    ),
-                    timeout=30.0,
-                )
-                # Success — remember working model
+                if self._client is not None:
+                    sdk_response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._client.models.generate_content,
+                            model=attempt_model,
+                            contents=sdk_contents,
+                            config=sdk_config,
+                        ),
+                        timeout=30.0,
+                    )
+                else:
+                    rest_response = await asyncio.wait_for(
+                        asyncio.to_thread(self._generate_via_rest, attempt_model, rest_payload),
+                        timeout=30.0,
+                    )
                 if attempt_model != self._model_name:
                     logger.warning("Switched to working model: %s", attempt_model)
                     self._model_name = attempt_model
@@ -174,7 +304,7 @@ class GeminiClient:
                     continue
                 elif "RESOURCE_EXHAUSTED" in err or "429" in err:
                     logger.warning("Rate limit on %s (429), trying next fallback model...", attempt_model)
-                    continue  # Try next model in chain instead of immediately failing
+                    continue
                 elif "INVALID_ARGUMENT" in err and "v1beta" not in err:
                     logger.error("Gemini API error on %s: %s", attempt_model, err)
                     continue
@@ -182,14 +312,16 @@ class GeminiClient:
                     logger.warning("Gemini error on %s: %s, trying next...", attempt_model, err[:150])
                     continue
         else:
-            # All models exhausted
             logger.warning("All Gemini models exhausted or rate-limited. Falling back to Demo.")
             return await DemoClient().chat(messages, tools, system_prompt)
 
-        if not response.candidates:
+        if rest_response is not None:
+            return self._parse_rest_response(rest_response)
+
+        if not sdk_response or not sdk_response.candidates:
             return AIResponse(text="No response generated.", provider="gemini")
 
-        candidate = response.candidates[0]
+        candidate = sdk_response.candidates[0]
         parts = candidate.content.parts if candidate.content else []
 
         for part in parts:
@@ -205,6 +337,24 @@ class GeminiClient:
 
         text_parts = [p.text for p in parts if p.text]
         return AIResponse(text="\n".join(text_parts) if text_parts else "", provider="gemini")
+
+    async def simple_chat(self, message: str, history: list[dict] | None = None, system_prompt: str = "") -> str:
+        """Simple conversational chat without tools (SDK or REST)."""
+        messages = []
+        for h in (history or [])[-20:]:
+            content = h.get("content", "")
+            if not content:
+                continue
+            role = h.get("role", "user")
+            messages.append({"role": role if role == "user" else "model", "content": content})
+        messages.append({"role": "user", "content": message})
+        result = await self.chat(
+            messages,
+            [],
+            system_prompt=system_prompt or "You are Kali AI, an expert cybersecurity assistant.",
+            temperature=0.7,
+        )
+        return result.text
 
 
 # ── OLLAMA CLIENT (local, no rate limits) ────────────────────────────

@@ -22,12 +22,75 @@ import argparse
 import textwrap
 from pathlib import Path
 
-# ─── Add project root to path ────────────────────────────────────
-ROOT = Path(__file__).parent
+# ─── Add project root to path & auto-switch to local venv if present ─
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# Load .env from project root
-from dotenv import load_dotenv
+
+def _auto_activate_venv() -> None:
+    """
+    If cli.py was launched with system Python (forgot `source venv/bin/activate`)
+    and a local ./venv or ./.venv exists, seamlessly re-exec using that venv Python.
+    """
+    if __name__ != "__main__":
+        return
+    if "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if os.environ.get("KALI_AI_VENV_REEXEC") == "1":
+        return
+
+    in_venv = (
+        getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+        or bool(os.environ.get("VIRTUAL_ENV"))
+    )
+    if in_venv:
+        return
+
+    rel_candidates = (
+        ["Scripts/python.exe"] if sys.platform == "win32" else ["bin/python3", "bin/python"]
+    )
+    for venv_name in ("venv", ".venv"):
+        venv_dir = ROOT / venv_name
+        if not (venv_dir / "pyvenv.cfg").exists():
+            continue
+        for rel in rel_candidates:
+            venv_py = venv_dir / rel
+            if venv_py.exists():
+                try:
+                    if venv_py.resolve() == Path(sys.executable).resolve():
+                        return
+                except OSError:
+                    pass
+                os.environ["KALI_AI_VENV_REEXEC"] = "1"
+                cmd = [str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]]
+                if sys.platform != "win32":
+                    os.execv(str(venv_py), cmd)
+                import subprocess
+                raise SystemExit(subprocess.call(cmd))
+
+
+_auto_activate_venv()
+
+# Load .env from project root (with stdlib fallback if python-dotenv is missing)
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(dotenv_path: Path | str | None = None, override: bool = False, **_kwargs) -> bool:
+        """Minimal stdlib .env fallback when python-dotenv is unavailable."""
+        env_path = Path(dotenv_path) if dotenv_path else (ROOT / ".env")
+        if not env_path.exists():
+            return False
+        for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if override or key not in os.environ:
+                os.environ[key] = val
+        return True
+
 load_dotenv(ROOT / ".env")
 
 # ─── Rich Terminal UI ────────────────────────────────────────────

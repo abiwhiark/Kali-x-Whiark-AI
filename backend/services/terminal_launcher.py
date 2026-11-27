@@ -28,8 +28,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Log directory for terminal output captures
-LOG_DIR = Path("/tmp/kali_ai_terminals")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR = Path(tempfile.gettempdir()) / "kali_ai_terminals"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Terminal emulator preference order ──────────────────────────────
 TERMINAL_EMULATORS = [

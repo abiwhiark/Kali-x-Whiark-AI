@@ -1203,11 +1203,14 @@ async def _executor_open_terminal(args: dict[str, Any]) -> dict[str, Any]:
     command = args.get("command", "")
     try:
         from backend.services.terminal_launcher import open_terminal
-        pid = open_terminal(command)
+        res = open_terminal(command)
+        if isinstance(res, str):
+            return {"tool": "open_terminal", "success": False, "command": command, "error": res}
         return {
             "tool": "open_terminal", "success": True,
-            "command": command, "pid": pid,
-            "message": f"Terminal opened running: {command}",
+            "command": command, "pid": res.pid,
+            "session": res.to_dict(),
+            "message": f"Terminal opened ({res.terminal}) running: {command}",
         }
     except Exception as e:
         return {"tool": "open_terminal", "success": False, "error": str(e)}
@@ -1218,9 +1221,14 @@ async def _executor_open_browser(args: dict[str, Any]) -> dict[str, Any]:
     url = args.get("url", "https://example.com")
     try:
         from backend.services.browser_launcher import open_browser
-        open_browser(url)
-        return {"tool": "open_browser", "success": True, "url": url,
-                "message": f"Browser opened at: {url}"}
+        res = open_browser(url)
+        if isinstance(res, str):
+            return {"tool": "open_browser", "success": False, "url": url, "error": res}
+        return {
+            "tool": "open_browser", "success": True, "url": res.url,
+            "session": res.to_dict(),
+            "message": f"Browser opened ({res.browser}) at: {res.url}",
+        }
     except Exception as e:
         return {"tool": "open_browser", "success": False, "error": str(e)}
 
@@ -1231,11 +1239,14 @@ async def _executor_open_tool_terminal(args: dict[str, Any]) -> dict[str, Any]:
     target = args.get("target", "")
     try:
         from backend.services.terminal_launcher import open_tool_terminal
-        open_tool_terminal(tool_name, target)
+        res = open_tool_terminal(tool=tool_name, target=target)
+        if isinstance(res, str):
+            return {"tool": "open_tool_terminal", "success": False, "tool_name": tool_name, "target": target, "error": res}
         return {
             "tool": "open_tool_terminal", "success": True,
-            "tool_name": tool_name, "target": target,
-            "message": f"Terminal opened running {tool_name} against {target}",
+            "tool_name": tool_name, "target": target, "pid": res.pid,
+            "session": res.to_dict(),
+            "message": f"Terminal opened ({res.terminal}) running {tool_name} against {target}",
         }
     except Exception as e:
         return {"tool": "open_tool_terminal", "success": False, "error": str(e)}
